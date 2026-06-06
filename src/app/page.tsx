@@ -1,65 +1,227 @@
-import Image from "next/image";
+'use client'
+
+import { useState, useRef } from 'react'
+
+type Step1Result = {
+  imagePath: string
+  width: number
+  height: number
+  sourceWidth?: number
+  sourceHeight?: number
+}
+
+type Step2Result = { res: string; htmlPath?: string }
 
 export default function Home() {
+  const [step1Status, setStep1Status] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [step1Result, setStep1Result] = useState<Step1Result | null>(null)
+  const [step1Error, setStep1Error] = useState('')
+
+  const [step2Status, setStep2Status] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [step2Result, setStep2Result] = useState<Step2Result | null>(null)
+  const [step2Error, setStep2Error] = useState('')
+
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  async function handleRemoveText(e: React.FormEvent) {
+    e.preventDefault()
+    const file = fileRef.current?.files?.[0]
+    if (!file) return
+
+    setStep1Status('loading')
+    setStep1Error('')
+    setStep1Result(null)
+    setStep2Status('idle')
+    setStep2Result(null)
+
+    const { width, height } = await getImageDimensions(file)
+
+    const formData = new FormData()
+    formData.append('image', file)
+    formData.append('width', String(width))
+    formData.append('height', String(height))
+
+    try {
+      const res = await fetch('/api/remove-text', { method: 'POST', body: formData })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Something went wrong')
+      setStep1Result(data)
+      setStep1Status('done')
+    } catch (err) {
+      setStep1Error(err instanceof Error ? err.message : 'Unknown error')
+      setStep1Status('error')
+    }
+  }
+
+  async function handleGenerateVariations() {
+    const file = fileRef.current?.files?.[0]
+    if (!file || !step1Result) return
+
+    setStep2Status('loading')
+    setStep2Error('')
+    setStep2Result(null)
+
+    const formData = new FormData()
+    formData.append('image', file)
+    formData.append('width', String(step1Result.width))
+    formData.append('height', String(step1Result.height))
+    formData.append('baseHtml', baseHtml)
+
+    try {
+      const res = await fetch('/api/generate-variations', { method: 'POST', body: formData })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Something went wrong')
+      setStep2Result(data)
+      setStep2Status('done')
+    } catch (err) {
+      setStep2Error(err instanceof Error ? err.message : 'Unknown error')
+      setStep2Status('error')
+    }
+  }
+
+  const baseHtml = step1Result
+    ? buildBaseHtml(step1Result.imagePath, step1Result.width, step1Result.height)
+    : ''
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <main className="flex min-h-screen flex-col items-center gap-10 p-8">
+      <h1 className="text-2xl font-semibold mt-8">Creatives App</h1>
+
+      {/* Step 1 */}
+      <section className="flex flex-col items-center gap-4">
+        <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wide">Step 1 — Remove Text</h2>
+        <form onSubmit={handleRemoveText} className="flex flex-col items-center gap-3">
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            required
+            className="border border-gray-300 rounded p-2 text-sm"
+          />
+          <button
+            type="submit"
+            disabled={step1Status === 'loading'}
+            className="bg-black text-white rounded-full px-6 py-2 text-sm disabled:opacity-50"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+            {step1Status === 'loading' ? 'Removing text…' : 'Remove Text'}
+          </button>
+        </form>
+        {step1Status === 'loading' && (
+          <p className="text-sm text-gray-400">Processing with AI, ~20–30s…</p>
+        )}
+        {step1Status === 'error' && (
+          <p className="text-sm text-red-500">{step1Error}</p>
+        )}
+        {step1Status === 'done' && step1Result && (
+          <div className="flex flex-col items-center gap-2">
+            <p className="text-xs text-gray-400">{step1Result.width}×{step1Result.height}px</p>
+            <CardPreview
+              width={step1Result.width}
+              height={step1Result.height}
+              htmlContent={baseHtml}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+          </div>
+        )}
+      </section>
+
+      {/* Step 2 */}
+      {step1Status === 'done' && step1Result && (
+        <section className="flex flex-col items-center gap-4">
+          <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wide">Step 2 — Generate Variations</h2>
+          <button
+            onClick={handleGenerateVariations}
+            disabled={step2Status === 'loading'}
+            className="bg-black text-white rounded-full px-6 py-2 text-sm disabled:opacity-50"
           >
-            Documentation
-          </a>
-        </div>
-      </main>
+            {step2Status === 'loading' ? 'Generating…' : 'Generate 1 Variation'}
+          </button>
+          {step2Status === 'loading' && (
+            <p className="text-sm text-gray-400">Analyzing layout and generating copy…</p>
+          )}
+          {step2Status === 'error' && (
+            <p className="text-sm text-red-500">{step2Error}</p>
+          )}
+          {step2Status === 'done' && step2Result && (
+            <div className="flex flex-col items-center gap-1">
+              <p className="text-xs text-gray-400">Variation 1</p>
+              <CardPreview
+                width={step1Result.width}
+                height={step1Result.height}
+                htmlContent={step2Result.res}
+              />
+              {step2Result.htmlPath && (
+                <a
+                  href={step2Result.htmlPath}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-blue-600 underline"
+                >
+                  Open saved HTML
+                </a>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+    </main>
+  )
+}
+
+const PREVIEW_WIDTH = 150
+
+function CardPreview({ width, height, htmlContent }: { width: number; height: number; htmlContent: string }) {
+  const scale = PREVIEW_WIDTH / width
+  const previewHeight = Math.round(height * scale)
+
+  return (
+    <div style={{ width: PREVIEW_WIDTH, height: previewHeight, overflow: 'hidden', border: '1px solid #e5e7eb', borderRadius: 4 }}>
+      <iframe
+        srcDoc={htmlContent}
+        style={{
+          width,
+          height,
+          border: 'none',
+          transform: `scale(${scale})`,
+          transformOrigin: 'top left',
+        }}
+        title="Card preview"
+        sandbox="allow-same-origin"
+      />
     </div>
-  );
+  )
+}
+
+function getImageDimensions(file: File): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.onload = () => {
+      resolve({ width: img.naturalWidth, height: img.naturalHeight })
+      URL.revokeObjectURL(url)
+    }
+    img.src = url
+  })
+}
+
+function buildBaseHtml(imagePath: string, width: number, height: number): string {
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: ${width}px;
+      height: ${height}px;
+      overflow: hidden;
+      background-image: url('${origin}${imagePath}');
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+    }
+  </style>
+</head>
+<body></body>
+</html>`
 }
