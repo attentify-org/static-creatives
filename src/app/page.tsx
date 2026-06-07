@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useRef } from 'react'
+import { toPng } from 'html-to-image'
+import JSZip from 'jszip'
 
 type Step1Result = {
   imagePath: string
@@ -13,6 +15,7 @@ type Step1Result = {
 type TextBlockRole = 'hook' | 'body' | 'cta' | 'badge' | 'price' | 'disclaimer' | 'logo' | 'other'
 type TextAlign = 'left' | 'center' | 'right'
 type TextTransform = 'none' | 'uppercase' | 'lowercase' | 'capitalize'
+type CopyRole = 'hook' | 'cta' | 'body'
 
 type TextSpan = {
   id: string
@@ -49,6 +52,30 @@ type LayoutResult = {
   blocks: TextBlock[]
 }
 
+type CopyVariation = {
+  id: string
+  patches: Array<{
+    blockId: string
+    text: string
+  }>
+  layout?: LayoutResult
+}
+
+type CopyVariationGroup = {
+  role: CopyRole
+  items: CopyVariation[]
+  reason: string
+}
+
+type CopyVariationsResult = {
+  variations: CopyVariationGroup[]
+}
+
+type SelectedVariationKey = {
+  role: CopyRole
+  id: string
+} | null
+
 export default function Home() {
   const [step1Status, setStep1Status] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [step1Result, setStep1Result] = useState<Step1Result | null>(null)
@@ -60,10 +87,16 @@ export default function Home() {
   const [editMode, setEditMode] = useState(false)
   const [selectedBlockId, setSelectedBlockId] = useState('')
   const [selectedSpanIndex, setSelectedSpanIndex] = useState(0)
+  const [copyCounts, setCopyCounts] = useState<Record<CopyRole, number>>({ hook: 5, cta: 0, body: 0 })
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [copyResult, setCopyResult] = useState<CopyVariationsResult | null>(null)
+  const [copyError, setCopyError] = useState('')
+  const [selectedVariationKey, setSelectedVariationKey] = useState<SelectedVariationKey>(null)
+  const [selectedDownloadKeys, setSelectedDownloadKeys] = useState<Set<string>>(new Set())
 
   const fileRef = useRef<HTMLInputElement>(null)
 
-  async function handleRemoveText(e: React.FormEvent) {
+  async function handleBuildCreative(e: React.FormEvent) {
     e.preventDefault()
     const file = fileRef.current?.files?.[0]
     if (!file) return
@@ -71,57 +104,47 @@ export default function Home() {
     setStep1Status('loading')
     setStep1Error('')
     setStep1Result(null)
-    setLayoutStatus('idle')
-    setLayoutResult(null)
-    setEditMode(false)
-    setSelectedBlockId('')
-    setSelectedSpanIndex(0)
-
-    const { width, height } = await getImageDimensions(file)
-
-    const formData = new FormData()
-    formData.append('image', file)
-    formData.append('width', String(width))
-    formData.append('height', String(height))
-
-    try {
-      const res = await fetch('/api/remove-text', { method: 'POST', body: formData })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? 'Something went wrong')
-      setStep1Result(data)
-      setStep1Status('done')
-    } catch (err) {
-      setStep1Error(err instanceof Error ? err.message : 'Unknown error')
-      setStep1Status('error')
-    }
-  }
-
-  async function handleExtractLayout() {
-    const file = fileRef.current?.files?.[0]
-    if (!file || !step1Result) return
-
     setLayoutStatus('loading')
     setLayoutError('')
     setLayoutResult(null)
     setEditMode(false)
     setSelectedBlockId('')
     setSelectedSpanIndex(0)
+    setCopyStatus('idle')
+    setCopyResult(null)
+    setSelectedVariationKey(null)
+    setSelectedDownloadKeys(new Set())
 
-    const formData = new FormData()
-    formData.append('image', file)
-    formData.append('width', String(step1Result.width))
-    formData.append('height', String(step1Result.height))
+    const sourceSize = await getImageDimensions(file)
+    const targetSize = getImageEditSize(sourceSize.width, sourceSize.height)
+
+    const removeTextFormData = new FormData()
+    removeTextFormData.append('image', file)
+    removeTextFormData.append('width', String(sourceSize.width))
+    removeTextFormData.append('height', String(sourceSize.height))
+
+    const extractLayoutFormData = new FormData()
+    extractLayoutFormData.append('image', file)
+    extractLayoutFormData.append('width', String(targetSize.width))
+    extractLayoutFormData.append('height', String(targetSize.height))
 
     try {
-      const res = await fetch('/api/extract-layout', { method: 'POST', body: formData })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? 'Something went wrong')
-      setLayoutResult(data)
-      setSelectedBlockId(data.blocks?.[0]?.id ?? '')
+      const [removeTextResult, layoutData] = await Promise.all([
+        postForm<Step1Result>('/api/remove-text', removeTextFormData),
+        postForm<LayoutResult>('/api/extract-layout', extractLayoutFormData),
+      ])
+
+      setStep1Result(removeTextResult)
+      setLayoutResult(layoutData)
+      setSelectedBlockId(layoutData.blocks?.[0]?.id ?? '')
       setSelectedSpanIndex(0)
+      setStep1Status('done')
       setLayoutStatus('done')
     } catch (err) {
-      setLayoutError(err instanceof Error ? err.message : 'Unknown error')
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      setStep1Error(message)
+      setLayoutError(message)
+      setStep1Status('error')
       setLayoutStatus('error')
     }
   }
@@ -193,6 +216,101 @@ export default function Home() {
     })
   }
 
+  async function handleGenerateCopyVariations() {
+    if (!layoutResult) return
+    const layoutForVariations = cloneLayout(layoutResult)
+
+    commitSelectedVariationEdits()
+    setCopyStatus('loading')
+    setCopyError('')
+    setCopyResult(null)
+
+    try {
+      const res = await fetch('/api/generate-copy-variations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          layout: layoutForVariations,
+          counts: copyCounts,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Something went wrong')
+      const materializedResult = materializeCopyVariations(data, layoutForVariations, step1Result?.width, step1Result?.height)
+      setCopyResult(materializedResult)
+      setSelectedDownloadKeys(new Set(getVariationKeys(materializedResult)))
+      setSelectedVariationKey(null)
+      setCopyStatus('done')
+    } catch (err) {
+      setCopyError(err instanceof Error ? err.message : 'Unknown error')
+      setCopyStatus('error')
+    }
+  }
+
+  function selectCopyVariation(role: CopyRole, variation: CopyVariation) {
+    if (!layoutResult) return
+
+    commitSelectedVariationEdits()
+
+    const nextLayout = cloneLayout(variation.layout ?? applyVariationPatches(
+      layoutResult,
+      variation,
+      step1Result?.width,
+      step1Result?.height,
+    ))
+    setLayoutResult(nextLayout)
+    setSelectedBlockId(nextLayout.blocks[0]?.id ?? '')
+    setSelectedSpanIndex(0)
+    setSelectedVariationKey({ role, id: variation.id })
+    setEditMode(true)
+  }
+
+  function toggleEditMode() {
+    if (editMode) {
+      commitSelectedVariationEdits()
+      setEditMode(false)
+      return
+    }
+
+    setEditMode(true)
+  }
+
+  function toggleDownloadSelection(key: string, selected: boolean) {
+    setSelectedDownloadKeys((current) => {
+      const next = new Set(current)
+      if (selected) {
+        next.add(key)
+      } else {
+        next.delete(key)
+      }
+      return next
+    })
+  }
+
+  function commitSelectedVariationEdits() {
+    if (!selectedVariationKey || !layoutResult) return
+
+    setCopyResult((current) => {
+      if (!current) return current
+
+      return {
+        ...current,
+        variations: current.variations.map((group) => {
+          if (group.role !== selectedVariationKey.role) return group
+
+          return {
+            ...group,
+            items: group.items.map((item) =>
+              item.id === selectedVariationKey.id
+                ? { ...item, layout: cloneLayout(layoutResult) }
+                : item,
+            ),
+          }
+        }),
+      }
+    })
+  }
+
   function nudgeSelectedBlock(dx: number, dy: number) {
     const block = layoutResult?.blocks.find((item) => item.id === selectedBlockId)
     if (!block) return
@@ -228,8 +346,8 @@ export default function Home() {
 
       {/* Step 1 */}
       <section className="flex flex-col items-center gap-4">
-        <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wide">Step 1 — Remove Text</h2>
-        <form onSubmit={handleRemoveText} className="flex flex-col items-center gap-3">
+        <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wide">Build Editable Creative</h2>
+        <form onSubmit={handleBuildCreative} className="flex flex-col items-center gap-3">
           <input
             ref={fileRef}
             type="file"
@@ -239,53 +357,28 @@ export default function Home() {
           />
           <button
             type="submit"
-            disabled={step1Status === 'loading'}
+            disabled={step1Status === 'loading' || layoutStatus === 'loading'}
             className="bg-black text-white rounded-full px-6 py-2 text-sm disabled:opacity-50"
           >
-            {step1Status === 'loading' ? 'Removing text…' : 'Remove Text'}
+            {step1Status === 'loading' || layoutStatus === 'loading' ? 'Building…' : 'Build Creative'}
           </button>
         </form>
-        {step1Status === 'loading' && (
-          <p className="text-sm text-gray-400">Processing with AI, ~20–30s…</p>
+        {(step1Status === 'loading' || layoutStatus === 'loading') && (
+          <p className="text-sm text-gray-400">Removing text and extracting editable layout in parallel…</p>
         )}
-        {step1Status === 'error' && (
-          <p className="text-sm text-red-500">{step1Error}</p>
-        )}
-        {step1Status === 'done' && step1Result && (
-          <div className="flex flex-col items-center gap-2">
-            <p className="text-xs text-gray-400">{step1Result.width}×{step1Result.height}px</p>
-            <CreativeCanvas
-              imagePath={step1Result.imagePath}
-              width={step1Result.width}
-              height={step1Result.height}
-            />
-          </div>
+        {(step1Status === 'error' || layoutStatus === 'error') && (
+          <p className="text-sm text-red-500">{step1Error || layoutError}</p>
         )}
       </section>
 
-      {/* Step 2 */}
-      {step1Status === 'done' && step1Result && (
+      {step1Status === 'done' && layoutStatus === 'done' && step1Result && layoutResult && (
         <section className="flex w-full max-w-5xl flex-col items-center gap-4">
-          <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wide">Step 2 — Build Editable Replica</h2>
-          <button
-            onClick={handleExtractLayout}
-            disabled={layoutStatus === 'loading'}
-            className="bg-black text-white rounded-full px-6 py-2 text-sm disabled:opacity-50"
-          >
-            {layoutStatus === 'loading' ? 'Analyzing…' : 'Build Text Layout'}
-          </button>
-          {layoutStatus === 'loading' && (
-            <p className="text-sm text-gray-400">Reconstructing editable text blocks…</p>
-          )}
-          {layoutStatus === 'error' && (
-            <p className="text-sm text-red-500">{layoutError}</p>
-          )}
-          {layoutStatus === 'done' && layoutResult && (
+          <>
             <div className="grid w-full gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
               <div className="flex flex-col items-center gap-3">
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => setEditMode((value) => !value)}
+                    onClick={toggleEditMode}
                     className="rounded-full border border-gray-300 px-4 py-2 text-sm"
                   >
                     {editMode ? 'Done Editing' : 'Edit'}
@@ -320,10 +413,231 @@ export default function Home() {
                 onDeleteBlock={deleteSelectedBlock}
               />
             </div>
-          )}
+            <CopyVariationsPanel
+              imagePath={step1Result.imagePath}
+              canvasWidth={step1Result.width}
+              canvasHeight={step1Result.height}
+              baseLayout={layoutResult}
+              counts={copyCounts}
+              status={copyStatus}
+              result={copyResult}
+              error={copyError}
+              onChangeCounts={setCopyCounts}
+              onGenerate={handleGenerateCopyVariations}
+              onSelectVariation={selectCopyVariation}
+              selectedVariationKey={selectedVariationKey}
+              selectedDownloadKeys={selectedDownloadKeys}
+              onToggleDownloadSelection={toggleDownloadSelection}
+            />
+          </>
         </section>
       )}
     </main>
+  )
+}
+
+function CopyVariationsPanel({
+  imagePath,
+  canvasWidth,
+  canvasHeight,
+  baseLayout,
+  counts,
+  status,
+  result,
+  error,
+  onChangeCounts,
+  onGenerate,
+  onSelectVariation,
+  selectedVariationKey,
+  selectedDownloadKeys,
+  onToggleDownloadSelection,
+}: {
+  imagePath: string
+  canvasWidth: number
+  canvasHeight: number
+  baseLayout: LayoutResult
+  counts: Record<CopyRole, number>
+  status: 'idle' | 'loading' | 'done' | 'error'
+  result: CopyVariationsResult | null
+  error: string
+  onChangeCounts: (counts: Record<CopyRole, number>) => void
+  onGenerate: () => void
+  onSelectVariation: (role: CopyRole, variation: CopyVariation) => void
+  selectedVariationKey: SelectedVariationKey
+  selectedDownloadKeys: Set<string>
+  onToggleDownloadSelection: (key: string, selected: boolean) => void
+}) {
+  const totalCount = counts.hook + counts.cta + counts.body
+  const [downloadStatus, setDownloadStatus] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [downloadError, setDownloadError] = useState('')
+  const exportNodeRefs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  function updateCount(role: CopyRole, value: number) {
+    onChangeCounts({
+      ...counts,
+      [role]: Math.max(0, Math.min(10, Math.floor(value || 0))),
+    })
+  }
+
+  async function handleDownloadSelected() {
+    if (!result || selectedDownloadKeys.size === 0) return
+
+    setDownloadStatus('loading')
+    setDownloadError('')
+
+    try {
+      await document.fonts?.ready
+      const selectedItems = result.variations.flatMap((group) =>
+        group.items
+          .filter((item) => selectedDownloadKeys.has(getVariationKey(group.role, item.id)))
+          .map((item) => ({ role: group.role, item })),
+      )
+
+      if (selectedItems.length === 1) {
+        const [{ role, item }] = selectedItems
+        const key = getVariationKey(role, item.id)
+        const node = exportNodeRefs.current[key]
+        if (!node) throw new Error('Selected variation is not ready for export')
+        const dataUrl = await toPng(node, { cacheBust: true, pixelRatio: 1, backgroundColor: '#ffffff' })
+        downloadDataUrl(dataUrl, `${safeFilename(key)}.png`)
+        setDownloadStatus('idle')
+        return
+      }
+
+      const zip = new JSZip()
+
+      for (const { role, item } of selectedItems) {
+        const key = getVariationKey(role, item.id)
+        const node = exportNodeRefs.current[key]
+        if (!node) continue
+        const dataUrl = await toPng(node, { cacheBust: true, pixelRatio: 1, backgroundColor: '#ffffff' })
+        zip.file(`${safeFilename(key)}.png`, dataUrl.split(',')[1], { base64: true })
+      }
+
+      const blob = await zip.generateAsync({ type: 'blob' })
+      downloadBlob(blob, 'creative-variations.zip')
+      setDownloadStatus('idle')
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : 'Download failed')
+      setDownloadStatus('error')
+    }
+  }
+
+  return (
+    <section className="flex w-full max-w-5xl flex-col gap-4 rounded border border-gray-200 p-4">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <NumberField label="Hook variations" value={counts.hook} onChange={(value) => updateCount('hook', value)} />
+        <NumberField label="CTA variations" value={counts.cta} onChange={(value) => updateCount('cta', value)} />
+        <NumberField label="Body variations" value={counts.body} onChange={(value) => updateCount('body', value)} />
+      </div>
+
+      <button
+        className="self-start rounded-full bg-black px-5 py-2 text-sm text-white disabled:opacity-50"
+        disabled={status === 'loading' || totalCount === 0}
+        onClick={onGenerate}
+      >
+        {status === 'loading' ? 'Generating copy…' : 'Generate Copy Variations'}
+      </button>
+
+      {status === 'error' && <p className="text-sm text-red-500">{error}</p>}
+
+      {status === 'done' && result && (
+        <div className="flex flex-col gap-6">
+          {result.variations.map((group) => (
+            <div key={group.role} className="flex flex-col gap-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">{group.role}</h3>
+              {group.reason && <p className="text-sm text-gray-400">{group.reason}</p>}
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                {group.items.map((item) => {
+                  const variationLayout = item.layout ?? applyVariationPatches(baseLayout, item, canvasWidth, canvasHeight)
+                  const isSelected = selectedVariationKey?.role === group.role && selectedVariationKey.id === item.id
+                  const variationKey = getVariationKey(group.role, item.id)
+
+                  return (
+                    <div
+                      key={item.id}
+                      className={[
+                        'flex flex-col items-center gap-2 rounded border p-3',
+                        isSelected ? 'border-blue-500' : 'border-gray-200',
+                      ].join(' ')}
+                    >
+                      <label className="flex w-full items-center gap-2 text-xs text-gray-500">
+                        <input
+                          type="checkbox"
+                          checked={selectedDownloadKeys.has(variationKey)}
+                          onChange={(event) => onToggleDownloadSelection(variationKey, event.target.checked)}
+                        />
+                        Export
+                      </label>
+                      <CreativeCanvas
+                        imagePath={imagePath}
+                        width={canvasWidth}
+                        height={canvasHeight}
+                        maxPreviewWidth={190}
+                        globalStyles={variationLayout.globalStyles}
+                        blocks={variationLayout.blocks}
+                      />
+                      <button
+                        className="rounded-full border border-gray-300 px-4 py-2 text-sm"
+                        onClick={() => onSelectVariation(group.role, item)}
+                      >
+                        {isSelected ? 'Selected' : 'Select'}
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+          <div className="flex flex-col gap-2 border-t border-gray-200 pt-4">
+            <button
+              className="self-start rounded-full bg-black px-5 py-2 text-sm text-white disabled:opacity-50"
+              disabled={downloadStatus === 'loading' || selectedDownloadKeys.size === 0}
+              onClick={handleDownloadSelected}
+            >
+              {downloadStatus === 'loading'
+                ? 'Preparing PNG…'
+                : `Download selected PNG (${selectedDownloadKeys.size})`}
+            </button>
+            {downloadStatus === 'error' && <p className="text-sm text-red-500">{downloadError}</p>}
+          </div>
+          <div
+            style={{
+              position: 'fixed',
+              left: -100000,
+              top: 0,
+              pointerEvents: 'none',
+            }}
+          >
+            {result.variations.flatMap((group) =>
+              group.items.map((item) => {
+                const variationKey = getVariationKey(group.role, item.id)
+                const variationLayout = item.layout ?? applyVariationPatches(baseLayout, item, canvasWidth, canvasHeight)
+
+                return (
+                  <div
+                    key={variationKey}
+                    ref={(node) => {
+                      exportNodeRefs.current[variationKey] = node
+                    }}
+                  >
+                    <CreativeCanvas
+                      imagePath={imagePath}
+                      width={canvasWidth}
+                      height={canvasHeight}
+                      maxPreviewWidth={canvasWidth}
+                      frame={false}
+                      globalStyles={variationLayout.globalStyles}
+                      blocks={variationLayout.blocks}
+                    />
+                  </div>
+                )
+              }),
+            )}
+          </div>
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -337,6 +651,8 @@ function CreativeCanvas({
   blocks = [],
   editMode = false,
   selectedBlockId = '',
+  maxPreviewWidth = PREVIEW_MAX_WIDTH,
+  frame = true,
   onSelectBlock,
 }: {
   imagePath: string
@@ -346,16 +662,18 @@ function CreativeCanvas({
   blocks?: TextBlock[]
   editMode?: boolean
   selectedBlockId?: string
+  maxPreviewWidth?: number
+  frame?: boolean
   onSelectBlock?: (id: string) => void
 }) {
-  const scale = Math.min(PREVIEW_MAX_WIDTH / width, 1)
+  const scale = Math.min(maxPreviewWidth / width, 1)
   const previewWidth = Math.round(width * scale)
   const previewHeight = Math.round(height * scale)
 
   return (
     <div
       style={{ width: previewWidth, height: previewHeight }}
-      className="overflow-hidden rounded border border-gray-200 bg-white shadow-sm"
+      className={frame ? 'overflow-hidden rounded border border-gray-200 bg-white shadow-sm' : 'overflow-hidden bg-white'}
     >
       <style>{globalStyles}</style>
       <div
@@ -639,6 +957,207 @@ function NumberField({
   )
 }
 
+async function postForm<T>(url: string, formData: FormData): Promise<T> {
+  const res = await fetch(url, { method: 'POST', body: formData })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error ?? 'Something went wrong')
+  return data
+}
+
+function applyVariationPatches(
+  layout: LayoutResult,
+  variation: CopyVariation,
+  canvasWidth?: number,
+  canvasHeight?: number,
+): LayoutResult {
+  const patchesByBlockId = new Map(variation.patches.map((patch) => [patch.blockId, patch.text]))
+  const bounds = getLayoutBounds(layout, canvasWidth, canvasHeight)
+
+  return {
+    ...layout,
+    blocks: layout.blocks.map((block) => {
+      const nextText = patchesByBlockId.get(block.id)
+      if (typeof nextText !== 'string') return block
+
+      return fitBlockText({
+        ...block,
+        text: nextText,
+        spans: null,
+      }, bounds.width, bounds.height)
+    }),
+  }
+}
+
+function materializeCopyVariations(
+  result: CopyVariationsResult,
+  baseLayout: LayoutResult,
+  canvasWidth?: number,
+  canvasHeight?: number,
+): CopyVariationsResult {
+  return {
+    ...result,
+    variations: result.variations.map((group) => ({
+      ...group,
+      items: group.items.map((item) => ({
+        ...item,
+        layout: applyVariationPatches(baseLayout, item, canvasWidth, canvasHeight),
+      })),
+    })),
+  }
+}
+
+function getVariationKeys(result: CopyVariationsResult) {
+  return result.variations.flatMap((group) =>
+    group.items.map((item) => getVariationKey(group.role, item.id)),
+  )
+}
+
+function getVariationKey(role: CopyRole, id: string) {
+  return `${role}-${id}`
+}
+
+function safeFilename(value: string) {
+  return value.replace(/[^a-z0-9-_]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase()
+}
+
+function downloadDataUrl(dataUrl: string, filename: string) {
+  const link = document.createElement('a')
+  link.href = dataUrl
+  link.download = filename
+  link.click()
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function cloneLayout(layout: LayoutResult): LayoutResult {
+  return {
+    ...layout,
+    blocks: layout.blocks.map((block) => ({
+      ...block,
+      spans: block.spans ? block.spans.map((span) => ({ ...span })) : null,
+    })),
+  }
+}
+
+function fitBlockText(block: TextBlock, canvasWidth: number, canvasHeight: number): TextBlock {
+  const nextBlock = { ...block }
+  const margin = 6
+  const originalCenterX = nextBlock.x + nextBlock.width / 2
+  const originalFontSize = nextBlock.fontSize
+  const minFontSize = Math.max(8, originalFontSize * 0.72)
+  const maxWidth = Math.max(8, canvasWidth - margin * 2)
+  const maxWidthWithGrowth = Math.min(maxWidth, Math.max(nextBlock.width, canvasWidth * 0.92))
+
+  if (estimateMaxLineWidth(nextBlock) > nextBlock.width) {
+    nextBlock.width = Math.min(maxWidthWithGrowth, Math.max(nextBlock.width, estimateMaxLineWidth(nextBlock) + 4))
+    preserveHorizontalAnchor(nextBlock, originalCenterX, canvasWidth, margin)
+  }
+
+  let fit = getTextFit(nextBlock)
+
+  while (!fit.fits && nextBlock.fontSize > minFontSize) {
+    const previousFontSize = nextBlock.fontSize
+    nextBlock.fontSize = Math.max(minFontSize, Number((nextBlock.fontSize * 0.94).toFixed(2)))
+    nextBlock.lineHeight = Math.max(8, Number((nextBlock.lineHeight * (nextBlock.fontSize / previousFontSize)).toFixed(2)))
+    nextBlock.letterSpacing = Math.max(-2, Number((nextBlock.letterSpacing - 0.04).toFixed(2)))
+
+    const desiredWidth = estimateMaxLineWidth(nextBlock) + 4
+    if (desiredWidth > nextBlock.width) {
+      nextBlock.width = Math.min(maxWidthWithGrowth, desiredWidth)
+      preserveHorizontalAnchor(nextBlock, originalCenterX, canvasWidth, margin)
+    }
+
+    fit = getTextFit(nextBlock)
+  }
+
+  if (!fit.fits && nextBlock.letterSpacing > -1.5) {
+    nextBlock.letterSpacing = -1.5
+    fit = getTextFit(nextBlock)
+  }
+
+  if (!fit.fits && nextBlock.width < maxWidthWithGrowth) {
+    nextBlock.width = maxWidthWithGrowth
+    preserveHorizontalAnchor(nextBlock, originalCenterX, canvasWidth, margin)
+    fit = getTextFit(nextBlock)
+  }
+
+  if (!fit.fits) {
+    const availableHeight = Math.max(8, canvasHeight - nextBlock.y - margin)
+    nextBlock.height = Math.min(availableHeight, Math.max(nextBlock.height, Math.ceil(fit.height)))
+  }
+
+  return nextBlock
+}
+
+function preserveHorizontalAnchor(
+  block: TextBlock,
+  originalCenterX: number,
+  canvasWidth: number,
+  margin: number,
+) {
+  if (block.align !== 'center') return
+
+  block.x = clampNumber(
+    Math.round(originalCenterX - block.width / 2),
+    margin,
+    Math.max(margin, canvasWidth - block.width - margin),
+  )
+}
+
+function getTextFit(block: TextBlock) {
+  const lineCount = estimateRenderedLineCount(block)
+  const height = lineCount * block.lineHeight
+  const width = estimateMaxLineWidth(block)
+
+  return {
+    fits: width <= block.width && height <= block.height,
+    width,
+    height,
+  }
+}
+
+function estimateRenderedLineCount(block: TextBlock) {
+  return block.text.split('\n').reduce((total, line) => {
+    const lineWidth = estimateLineWidth(line, block)
+    return total + Math.max(1, Math.ceil(lineWidth / Math.max(1, block.width)))
+  }, 0)
+}
+
+function estimateMaxLineWidth(block: TextBlock) {
+  return Math.max(...block.text.split('\n').map((line) => estimateLineWidth(line, block)), 0)
+}
+
+function estimateLineWidth(line: string, block: TextBlock) {
+  const text = applyTextTransform(line, block.textTransform)
+  const uppercaseRatio = text.length ? text.replace(/[^A-Z]/g, '').length / text.length : 0
+  const weightFactor = block.fontWeight >= 700 ? 0.62 : 0.56
+  const charFactor = weightFactor + uppercaseRatio * 0.05
+  const tracking = Math.max(-1, block.letterSpacing) * Math.max(0, text.length - 1)
+  return text.length * block.fontSize * charFactor + tracking
+}
+
+function applyTextTransform(text: string, transform: TextTransform) {
+  if (transform === 'uppercase') return text.toUpperCase()
+  if (transform === 'lowercase') return text.toLowerCase()
+  if (transform === 'capitalize') {
+    return text.replace(/\b\w/g, (char) => char.toUpperCase())
+  }
+  return text
+}
+
+function getLayoutBounds(layout: LayoutResult, canvasWidth?: number, canvasHeight?: number) {
+  const width = canvasWidth ?? Math.max(...layout.blocks.map((block) => block.x + block.width), 1)
+  const height = canvasHeight ?? Math.max(...layout.blocks.map((block) => block.y + block.height), 1)
+  return { width, height }
+}
+
 function getBlockSpans(block: TextBlock): TextSpan[] {
   if (Array.isArray(block.spans) && block.spans.length) return block.spans
 
@@ -726,4 +1245,40 @@ function getImageDimensions(file: File): Promise<{ width: number; height: number
     }
     img.src = url
   })
+}
+
+function getImageEditSize(width: number, height: number) {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return { width: 1024, height: 1024 }
+  }
+
+  const aspectRatio = width / height
+  let outputWidth = width
+  let outputHeight = height
+
+  if (aspectRatio > 3) {
+    outputWidth = height * 3
+  } else if (aspectRatio < 1 / 3) {
+    outputHeight = width * 3
+  }
+
+  const maxPixels = 3840 * 2160
+  if (outputWidth * outputHeight > maxPixels) {
+    const scale = Math.sqrt(maxPixels / (outputWidth * outputHeight))
+    outputWidth *= scale
+    outputHeight *= scale
+  }
+
+  return {
+    width: roundToMultiple(outputWidth, 16),
+    height: roundToMultiple(outputHeight, 16),
+  }
+}
+
+function roundToMultiple(value: number, multiple: number) {
+  return Math.max(multiple, Math.round(value / multiple) * multiple)
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
 }
