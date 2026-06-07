@@ -17,6 +17,7 @@ type TextAlign = 'left' | 'center' | 'right'
 type TextTransform = 'none' | 'uppercase' | 'lowercase' | 'capitalize'
 type CopyRole = 'hook' | 'cta' | 'body'
 type HookVariationMode = 'light' | 'medium' | 'strong'
+type BackgroundMode = 'original' | 'light' | 'medium' | 'strong'
 
 type TextSpan = {
   id: string
@@ -73,9 +74,17 @@ type CopyVariationsResult = {
 }
 
 type SelectedVariationKey = {
+  backgroundId: string
   role: CopyRole
   id: string
 } | null
+
+type BackgroundVariant = {
+  id: string
+  label: string
+  imagePath: string
+  mode: BackgroundMode
+}
 
 export default function Home() {
   const [step1Status, setStep1Status] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
@@ -95,6 +104,11 @@ export default function Home() {
   const [copyError, setCopyError] = useState('')
   const [selectedVariationKey, setSelectedVariationKey] = useState<SelectedVariationKey>(null)
   const [selectedDownloadKeys, setSelectedDownloadKeys] = useState<Set<string>>(new Set())
+  const [backgroundMode, setBackgroundMode] = useState<Exclude<BackgroundMode, 'original'>>('medium')
+  const [backgroundStatus, setBackgroundStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [backgroundError, setBackgroundError] = useState('')
+  const [backgroundVariants, setBackgroundVariants] = useState<BackgroundVariant[]>([])
+  const [editorBackgroundId, setEditorBackgroundId] = useState('original')
 
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -116,6 +130,10 @@ export default function Home() {
     setCopyResult(null)
     setSelectedVariationKey(null)
     setSelectedDownloadKeys(new Set())
+    setBackgroundStatus('idle')
+    setBackgroundError('')
+    setBackgroundVariants([])
+    setEditorBackgroundId('original')
 
     const sourceSize = await getImageDimensions(file)
     const targetSize = getImageEditSize(sourceSize.width, sourceSize.height)
@@ -241,7 +259,7 @@ export default function Home() {
       if (!res.ok) throw new Error(data.error ?? 'Something went wrong')
       const materializedResult = materializeCopyVariations(data, layoutForVariations, step1Result?.width, step1Result?.height)
       setCopyResult(materializedResult)
-      setSelectedDownloadKeys(new Set(getVariationKeys(materializedResult)))
+      setSelectedDownloadKeys(new Set(getVariationKeys(materializedResult, 'original')))
       setSelectedVariationKey(null)
       setCopyStatus('done')
     } catch (err) {
@@ -250,7 +268,39 @@ export default function Home() {
     }
   }
 
-  function selectCopyVariation(role: CopyRole, variation: CopyVariation) {
+  async function handleGenerateBackgroundVariant() {
+    const file = fileRef.current?.files?.[0]
+    if (!file || !step1Result) return
+
+    setBackgroundStatus('loading')
+    setBackgroundError('')
+
+    const formData = new FormData()
+    formData.append('sourceImage', file)
+    formData.append('cleanImagePath', step1Result.imagePath)
+    formData.append('width', String(step1Result.width))
+    formData.append('height', String(step1Result.height))
+    formData.append('mode', backgroundMode)
+
+    try {
+      const data = await postForm<BackgroundVariant>('/api/generate-background-variant', formData)
+      const numberedBackground = {
+        ...data,
+        label: `Background variant ${backgroundVariants.length + 1} (${backgroundMode})`,
+      }
+      setBackgroundVariants((current) => [...current, numberedBackground])
+      setSelectedDownloadKeys((current) => {
+        if (!copyResult) return current
+        return new Set([...current, ...getVariationKeys(copyResult, numberedBackground.id)])
+      })
+      setBackgroundStatus('done')
+    } catch (err) {
+      setBackgroundError(err instanceof Error ? err.message : 'Unknown error')
+      setBackgroundStatus('error')
+    }
+  }
+
+  function selectCopyVariation(backgroundId: string, role: CopyRole, variation: CopyVariation) {
     if (!layoutResult) return
 
     commitSelectedVariationEdits()
@@ -264,7 +314,8 @@ export default function Home() {
     setLayoutResult(nextLayout)
     setSelectedBlockId(nextLayout.blocks[0]?.id ?? '')
     setSelectedSpanIndex(0)
-    setSelectedVariationKey({ role, id: variation.id })
+    setEditorBackgroundId(backgroundId)
+    setSelectedVariationKey({ backgroundId, role, id: variation.id })
     setEditMode(true)
   }
 
@@ -342,6 +393,18 @@ export default function Home() {
   const selectedBlock = layoutResult?.blocks.find((block) => block.id === selectedBlockId) ?? null
   const selectedSpans = selectedBlock ? getInlineSpans(selectedBlock) : []
   const selectedSpan = selectedSpans[selectedSpanIndex] ?? selectedSpans[0] ?? null
+  const backgrounds: BackgroundVariant[] = step1Result
+    ? [
+        {
+          id: 'original',
+          label: 'Original background',
+          imagePath: step1Result.imagePath,
+          mode: 'original',
+        },
+        ...backgroundVariants,
+      ]
+    : []
+  const editorBackground = backgrounds.find((background) => background.id === editorBackgroundId) ?? backgrounds[0]
 
   return (
     <main className="flex min-h-screen flex-col items-center gap-8 p-6">
@@ -388,8 +451,8 @@ export default function Home() {
                   </button>
                   <p className="text-xs text-gray-400">{layoutResult.blocks.length} text blocks</p>
                 </div>
-                <CreativeCanvas
-                  imagePath={step1Result.imagePath}
+                  <CreativeCanvas
+                  imagePath={editorBackground.imagePath}
                   width={step1Result.width}
                   height={step1Result.height}
                   globalStyles={layoutResult.globalStyles}
@@ -416,19 +479,24 @@ export default function Home() {
                 onDeleteBlock={deleteSelectedBlock}
               />
             </div>
-            <CopyVariationsPanel
-              imagePath={step1Result.imagePath}
+              <CopyVariationsPanel
+              backgrounds={backgrounds}
               canvasWidth={step1Result.width}
               canvasHeight={step1Result.height}
               baseLayout={layoutResult}
               counts={copyCounts}
               hookMode={hookVariationMode}
+              backgroundMode={backgroundMode}
+              backgroundStatus={backgroundStatus}
               status={copyStatus}
               result={copyResult}
               error={copyError}
+              backgroundError={backgroundError}
               onChangeCounts={setCopyCounts}
               onChangeHookMode={setHookVariationMode}
+              onChangeBackgroundMode={setBackgroundMode}
               onGenerate={handleGenerateCopyVariations}
+              onGenerateBackground={handleGenerateBackgroundVariant}
               onSelectVariation={selectCopyVariation}
               selectedVariationKey={selectedVariationKey}
               selectedDownloadKeys={selectedDownloadKeys}
@@ -442,36 +510,46 @@ export default function Home() {
 }
 
 function CopyVariationsPanel({
-  imagePath,
+  backgrounds,
   canvasWidth,
   canvasHeight,
   baseLayout,
   counts,
   hookMode,
+  backgroundMode,
+  backgroundStatus,
   status,
   result,
   error,
+  backgroundError,
   onChangeCounts,
   onChangeHookMode,
+  onChangeBackgroundMode,
   onGenerate,
+  onGenerateBackground,
   onSelectVariation,
   selectedVariationKey,
   selectedDownloadKeys,
   onToggleDownloadSelection,
 }: {
-  imagePath: string
+  backgrounds: BackgroundVariant[]
   canvasWidth: number
   canvasHeight: number
   baseLayout: LayoutResult
   counts: Record<CopyRole, number>
   hookMode: HookVariationMode
+  backgroundMode: Exclude<BackgroundMode, 'original'>
+  backgroundStatus: 'idle' | 'loading' | 'done' | 'error'
   status: 'idle' | 'loading' | 'done' | 'error'
   result: CopyVariationsResult | null
   error: string
+  backgroundError: string
   onChangeCounts: (counts: Record<CopyRole, number>) => void
   onChangeHookMode: (mode: HookVariationMode) => void
+  onChangeBackgroundMode: (mode: Exclude<BackgroundMode, 'original'>) => void
   onGenerate: () => void
-  onSelectVariation: (role: CopyRole, variation: CopyVariation) => void
+  onGenerateBackground: () => void
+  onSelectVariation: (backgroundId: string, role: CopyRole, variation: CopyVariation) => void
   selectedVariationKey: SelectedVariationKey
   selectedDownloadKeys: Set<string>
   onToggleDownloadSelection: (key: string, selected: boolean) => void
@@ -497,14 +575,16 @@ function CopyVariationsPanel({
     try {
       await document.fonts?.ready
       const selectedItems = result.variations.flatMap((group) =>
-        group.items
-          .filter((item) => selectedDownloadKeys.has(getVariationKey(group.role, item.id)))
-          .map((item) => ({ role: group.role, item })),
+        group.items.flatMap((item) =>
+          backgrounds
+            .filter((background) => selectedDownloadKeys.has(getVariationKey(background.id, group.role, item.id)))
+            .map((background) => ({ background, role: group.role, item })),
+        ),
       )
 
       if (selectedItems.length === 1) {
-        const [{ role, item }] = selectedItems
-        const key = getVariationKey(role, item.id)
+        const [{ background, role, item }] = selectedItems
+        const key = getVariationKey(background.id, role, item.id)
         const node = exportNodeRefs.current[key]
         if (!node) throw new Error('Selected variation is not ready for export')
         const dataUrl = await toPng(node, { cacheBust: true, pixelRatio: 1, backgroundColor: '#ffffff' })
@@ -515,8 +595,8 @@ function CopyVariationsPanel({
 
       const zip = new JSZip()
 
-      for (const { role, item } of selectedItems) {
-        const key = getVariationKey(role, item.id)
+      for (const { background, role, item } of selectedItems) {
+        const key = getVariationKey(background.id, role, item.id)
         const node = exportNodeRefs.current[key]
         if (!node) continue
         const dataUrl = await toPng(node, { cacheBust: true, pixelRatio: 1, backgroundColor: '#ffffff' })
@@ -562,54 +642,86 @@ function CopyVariationsPanel({
         {status === 'loading' ? 'Generating copy…' : 'Generate Copy Variations'}
       </button>
 
+      <div className="flex flex-col gap-3 border-t border-gray-200 pt-4 sm:flex-row sm:items-end">
+        <label className="flex flex-col gap-1 text-xs text-gray-500">
+          Background mode
+          <select
+            value={backgroundMode}
+            onChange={(event) => onChangeBackgroundMode(event.target.value as Exclude<BackgroundMode, 'original'>)}
+            className="rounded border border-gray-300 bg-white p-2 text-sm text-black"
+          >
+            <option value="light">Light background</option>
+            <option value="medium">Medium background</option>
+            <option value="strong">Strong background</option>
+          </select>
+        </label>
+        <button
+          className="self-start rounded-full border border-gray-300 px-5 py-2 text-sm disabled:opacity-50"
+          disabled={backgroundStatus === 'loading'}
+          onClick={onGenerateBackground}
+        >
+          {backgroundStatus === 'loading' ? 'Generating background…' : 'Generate Background Variant'}
+        </button>
+      </div>
+      {backgroundStatus === 'error' && <p className="text-sm text-red-500">{backgroundError}</p>}
+
       {status === 'error' && <p className="text-sm text-red-500">{error}</p>}
 
       {status === 'done' && result && (
         <div className="flex flex-col gap-6">
-          {result.variations.map((group) => (
-            <div key={group.role} className="flex flex-col gap-3">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">{group.role}</h3>
-              {group.reason && <p className="text-sm text-gray-400">{group.reason}</p>}
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                {group.items.map((item) => {
-                  const variationLayout = item.layout ?? applyVariationPatches(baseLayout, item, canvasWidth, canvasHeight)
-                  const isSelected = selectedVariationKey?.role === group.role && selectedVariationKey.id === item.id
-                  const variationKey = getVariationKey(group.role, item.id)
+          {backgrounds.map((background) => (
+            <div key={background.id} className="flex flex-col gap-5">
+              <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500">{background.label}</h3>
+              {result.variations.map((group) => (
+                <div key={`${background.id}-${group.role}`} className="flex flex-col gap-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">{group.role}</h4>
+                  {group.reason && <p className="text-sm text-gray-400">{group.reason}</p>}
+                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                    {group.items.map((item) => {
+                      const variationLayout = item.layout ?? applyVariationPatches(baseLayout, item, canvasWidth, canvasHeight)
+                      const isSelected =
+                        selectedVariationKey?.backgroundId === background.id &&
+                        selectedVariationKey.role === group.role &&
+                        selectedVariationKey.id === item.id
+                      const variationKey = getVariationKey(background.id, group.role, item.id)
 
-                  return (
-                    <div
-                      key={item.id}
-                      className={[
-                        'flex flex-col items-center gap-2 rounded border p-3',
-                        isSelected ? 'border-blue-500' : 'border-gray-200',
-                      ].join(' ')}
-                    >
-                      <label className="flex w-full items-center gap-2 text-xs text-gray-500">
-                        <input
-                          type="checkbox"
-                          checked={selectedDownloadKeys.has(variationKey)}
-                          onChange={(event) => onToggleDownloadSelection(variationKey, event.target.checked)}
-                        />
-                        Export
-                      </label>
-                      <CreativeCanvas
-                        imagePath={imagePath}
-                        width={canvasWidth}
-                        height={canvasHeight}
-                        maxPreviewWidth={190}
-                        globalStyles={variationLayout.globalStyles}
-                        blocks={variationLayout.blocks}
-                      />
-                      <button
-                        className="rounded-full border border-gray-300 px-4 py-2 text-sm"
-                        onClick={() => onSelectVariation(group.role, item)}
-                      >
-                        {isSelected ? 'Selected' : 'Select'}
-                      </button>
-                    </div>
-                  )
-                })}
-              </div>
+                      return (
+                        <div
+                          key={variationKey}
+                          className={[
+                            'flex flex-col items-center gap-2 rounded border p-3',
+                            isSelected ? 'border-blue-500' : 'border-gray-200',
+                          ].join(' ')}
+                        >
+                          <label className="flex w-full items-center gap-2 text-xs text-gray-500">
+                            <input
+                              type="checkbox"
+                              checked={selectedDownloadKeys.has(variationKey)}
+                              onChange={(event) => onToggleDownloadSelection(variationKey, event.target.checked)}
+                            />
+                            Export
+                          </label>
+                          <CreativeCanvas
+                            imagePath={background.imagePath}
+                            width={canvasWidth}
+                            height={canvasHeight}
+                            maxPreviewWidth={190}
+                            globalStyles={variationLayout.globalStyles}
+                            blocks={variationLayout.blocks}
+                          />
+                          <button
+                            className="rounded-full border border-gray-300 px-4 py-2 text-sm"
+                            onClick={() => onSelectVariation(background.id, group.role, item)}
+                          >
+                            {isSelected ? 'Selected' : 'Select'}
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+              <div className="border-b border-gray-200" />
             </div>
           ))}
           <div className="flex flex-col gap-2 border-t border-gray-200 pt-4">
@@ -632,30 +744,32 @@ function CopyVariationsPanel({
               pointerEvents: 'none',
             }}
           >
-            {result.variations.flatMap((group) =>
-              group.items.map((item) => {
-                const variationKey = getVariationKey(group.role, item.id)
-                const variationLayout = item.layout ?? applyVariationPatches(baseLayout, item, canvasWidth, canvasHeight)
+            {backgrounds.flatMap((background) =>
+              result.variations.flatMap((group) =>
+                group.items.map((item) => {
+                  const variationKey = getVariationKey(background.id, group.role, item.id)
+                  const variationLayout = item.layout ?? applyVariationPatches(baseLayout, item, canvasWidth, canvasHeight)
 
-                return (
-                  <div
-                    key={variationKey}
-                    ref={(node) => {
-                      exportNodeRefs.current[variationKey] = node
-                    }}
-                  >
-                    <CreativeCanvas
-                      imagePath={imagePath}
-                      width={canvasWidth}
-                      height={canvasHeight}
-                      maxPreviewWidth={canvasWidth}
-                      frame={false}
-                      globalStyles={variationLayout.globalStyles}
-                      blocks={variationLayout.blocks}
-                    />
-                  </div>
-                )
-              }),
+                  return (
+                    <div
+                      key={variationKey}
+                      ref={(node) => {
+                        exportNodeRefs.current[variationKey] = node
+                      }}
+                    >
+                      <CreativeCanvas
+                        imagePath={background.imagePath}
+                        width={canvasWidth}
+                        height={canvasHeight}
+                        maxPreviewWidth={canvasWidth}
+                        frame={false}
+                        globalStyles={variationLayout.globalStyles}
+                        blocks={variationLayout.blocks}
+                      />
+                    </div>
+                  )
+                }),
+              ),
             )}
           </div>
         </div>
@@ -1029,14 +1143,14 @@ function materializeCopyVariations(
   }
 }
 
-function getVariationKeys(result: CopyVariationsResult) {
+function getVariationKeys(result: CopyVariationsResult, backgroundId: string) {
   return result.variations.flatMap((group) =>
-    group.items.map((item) => getVariationKey(group.role, item.id)),
+    group.items.map((item) => getVariationKey(backgroundId, group.role, item.id)),
   )
 }
 
-function getVariationKey(role: CopyRole, id: string) {
-  return `${role}-${id}`
+function getVariationKey(backgroundId: string, role: CopyRole, id: string) {
+  return `${backgroundId}-${role}-${id}`
 }
 
 function safeFilename(value: string) {
