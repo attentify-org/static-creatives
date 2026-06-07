@@ -6,6 +6,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const copyModel = process.env.OPENAI_COPY_MODEL ?? process.env.OPENAI_LAYOUT_MODEL ?? "gpt-5.4";
 
 type CopyRole = "hook" | "cta" | "body";
+type HookVariationMode = "light" | "medium" | "strong";
 
 type RequestBody = {
   layout?: {
@@ -20,6 +21,7 @@ type RequestBody = {
     }>;
   };
   counts?: Partial<Record<CopyRole, number>>;
+  hookMode?: HookVariationMode;
 };
 
 const variationItemSchema = {
@@ -72,6 +74,7 @@ const responseSchema = {
 export async function POST(request: Request) {
   const body = (await request.json()) as RequestBody;
   const counts = normalizeCounts(body.counts);
+  const hookMode = normalizeHookMode(body.hookMode);
   const targetRoles = Object.entries(counts).filter(([, count]) => count > 0);
 
   if (!targetRoles.length) {
@@ -107,7 +110,7 @@ export async function POST(request: Request) {
         content: [
           {
             type: "input_text",
-            text: buildPrompt(sourceBlocks, counts),
+            text: buildPrompt(sourceBlocks, counts, hookMode),
           },
         ],
       },
@@ -142,6 +145,7 @@ function buildPrompt(
     charCount: number;
   }>,
   counts: Record<CopyRole, number>,
+  hookMode: HookVariationMode,
 ) {
   return `Generate patch-based text variations for an existing editable ad creative layout.
 
@@ -150,6 +154,9 @@ ${JSON.stringify(sourceBlocks, null, 2)}
 
 Requested counts:
 ${JSON.stringify(counts, null, 2)}
+
+Hook variation mode:
+${hookMode}
 
 Rules:
 - Return only roles with requested count > 0.
@@ -170,6 +177,12 @@ Rules:
 - Do not create 3-line text for a 2-line block, or 2-line text for a 1-line block, unless the source already has enough vertical space and the text is clearly short.
 - Preserve the same language as the source creative.
 - For hook variations: usually patch only the main hook block(s). If there are multiple hook blocks, patch only the relevant hook block(s).
+- Hook mode controls how different the hook ideas should be:
+  - light: change 1-3 meaningful words while preserving the same angle and meaning. Example: "beat / fix / solve / break task paralysis".
+  - medium: preserve the same core pain/desire, but change the framing or mechanism. Example: "Task paralysis is not laziness".
+  - strong: change the angle, structure, and emotional trigger while still fitting the same audience and offer. Example: "If your to-do list makes you freeze, this is why".
+- For medium and strong hook modes, do not just swap synonyms. Produce meaningfully different hook angles.
+- Even in strong mode, the hook must still fit the original block's line count and visual size. Prefer shorter strong hooks over long hooks.
 - For CTA variations: patch only CTA blocks. If no CTA block exists, return no CTA items and explain that CTA does not exist.
 - For body variations: one variation may patch multiple body blocks. Choose the most appropriate body blocks yourself. Do not necessarily patch every body block.
 - For body variations: preserve the structure of the creative. For example, a variation may patch subheadline + proof text + time promise as a coordinated set.
@@ -204,6 +217,11 @@ function normalizeCounts(counts: RequestBody["counts"]): Record<CopyRole, number
     cta: clampCount(counts?.cta),
     body: clampCount(counts?.body),
   };
+}
+
+function normalizeHookMode(value: unknown): HookVariationMode {
+  if (value === "light" || value === "medium" || value === "strong") return value;
+  return "medium";
 }
 
 function clampCount(value: unknown) {

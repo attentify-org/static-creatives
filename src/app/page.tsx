@@ -16,6 +16,7 @@ type TextBlockRole = 'hook' | 'body' | 'cta' | 'badge' | 'price' | 'disclaimer' 
 type TextAlign = 'left' | 'center' | 'right'
 type TextTransform = 'none' | 'uppercase' | 'lowercase' | 'capitalize'
 type CopyRole = 'hook' | 'cta' | 'body'
+type HookVariationMode = 'light' | 'medium' | 'strong'
 
 type TextSpan = {
   id: string
@@ -88,6 +89,7 @@ export default function Home() {
   const [selectedBlockId, setSelectedBlockId] = useState('')
   const [selectedSpanIndex, setSelectedSpanIndex] = useState(0)
   const [copyCounts, setCopyCounts] = useState<Record<CopyRole, number>>({ hook: 5, cta: 0, body: 0 })
+  const [hookVariationMode, setHookVariationMode] = useState<HookVariationMode>('medium')
   const [copyStatus, setCopyStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [copyResult, setCopyResult] = useState<CopyVariationsResult | null>(null)
   const [copyError, setCopyError] = useState('')
@@ -232,6 +234,7 @@ export default function Home() {
         body: JSON.stringify({
           layout: layoutForVariations,
           counts: copyCounts,
+          hookMode: hookVariationMode,
         }),
       })
       const data = await res.json()
@@ -419,10 +422,12 @@ export default function Home() {
               canvasHeight={step1Result.height}
               baseLayout={layoutResult}
               counts={copyCounts}
+              hookMode={hookVariationMode}
               status={copyStatus}
               result={copyResult}
               error={copyError}
               onChangeCounts={setCopyCounts}
+              onChangeHookMode={setHookVariationMode}
               onGenerate={handleGenerateCopyVariations}
               onSelectVariation={selectCopyVariation}
               selectedVariationKey={selectedVariationKey}
@@ -442,10 +447,12 @@ function CopyVariationsPanel({
   canvasHeight,
   baseLayout,
   counts,
+  hookMode,
   status,
   result,
   error,
   onChangeCounts,
+  onChangeHookMode,
   onGenerate,
   onSelectVariation,
   selectedVariationKey,
@@ -457,10 +464,12 @@ function CopyVariationsPanel({
   canvasHeight: number
   baseLayout: LayoutResult
   counts: Record<CopyRole, number>
+  hookMode: HookVariationMode
   status: 'idle' | 'loading' | 'done' | 'error'
   result: CopyVariationsResult | null
   error: string
   onChangeCounts: (counts: Record<CopyRole, number>) => void
+  onChangeHookMode: (mode: HookVariationMode) => void
   onGenerate: () => void
   onSelectVariation: (role: CopyRole, variation: CopyVariation) => void
   selectedVariationKey: SelectedVariationKey
@@ -526,7 +535,21 @@ function CopyVariationsPanel({
   return (
     <section className="flex w-full max-w-5xl flex-col gap-4 rounded border border-gray-200 p-4">
       <div className="grid gap-3 sm:grid-cols-3">
-        <NumberField label="Hook variations" value={counts.hook} onChange={(value) => updateCount('hook', value)} />
+        <div className="flex flex-col gap-2">
+          <NumberField label="Hook variations" value={counts.hook} onChange={(value) => updateCount('hook', value)} />
+          <label className="flex flex-col gap-1 text-xs text-gray-500">
+            Hook mode
+            <select
+              value={hookMode}
+              onChange={(event) => onChangeHookMode(event.target.value as HookVariationMode)}
+              className="rounded border border-gray-300 bg-white p-2 text-sm text-black"
+            >
+              <option value="light">Light variation</option>
+              <option value="medium">Medium variation</option>
+              <option value="strong">Strong variation</option>
+            </select>
+          </label>
+        </div>
         <NumberField label="CTA variations" value={counts.cta} onChange={(value) => updateCount('cta', value)} />
         <NumberField label="Body variations" value={counts.body} onChange={(value) => updateCount('body', value)} />
       </div>
