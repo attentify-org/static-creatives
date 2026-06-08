@@ -137,6 +137,8 @@ POST /api/extract-layout
 - `medium` - сохранить боль/желание, но поменять подачу или механизм;
 - `strong` - поменять угол, структуру и эмоциональный триггер.
 
+Пользователь также может добавить свободный prompt/instruction для генерации copy. Он используется как дополнительное направление для hooks/CTA/body, но не может менять главный контракт: AI все равно возвращает только text patches и не имеет права менять layout/style поля.
+
 Frontend отправляет текущий отредактированный layout в:
 
 ```txt
@@ -495,7 +497,8 @@ Input:
     "cta": 3,
     "body": 5
   },
-  "hookMode": "medium"
+  "hookMode": "medium",
+  "userPrompt": "Make hooks more direct and focus on time savings."
 }
 ```
 
@@ -542,6 +545,7 @@ Output:
 - возвращать только text patches;
 - никогда не менять layout/style поля;
 - новый текст должен быть близок к оригиналу по визуальному размеру, line count и длине;
+- `userPrompt` учитывать только если он совместим с layout fit, source creative, safety rules и patch-only контрактом;
 - если есть сомнение, делать короче;
 - body variation может патчить несколько body-блоков;
 - hook mode управляет степенью отличия hook.
@@ -777,4 +781,3 @@ Production:
 - логировать OpenAI latency/cost/errors;
 - не показывать internal error details пользователю;
 - добавить retry/backoff для image generation, где это безопасно.
-

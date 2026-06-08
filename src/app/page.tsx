@@ -87,6 +87,9 @@ type BackgroundVariant = {
 }
 
 export default function Home() {
+  const [activeTab, setActiveTab] = useState<'upload' | 'workspace'>('upload')
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [variationModalOpen, setVariationModalOpen] = useState<'text' | 'visual' | null>(null)
   const [step1Status, setStep1Status] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [step1Result, setStep1Result] = useState<Step1Result | null>(null)
   const [step1Error, setStep1Error] = useState('')
@@ -99,8 +102,10 @@ export default function Home() {
   const [selectedSpanIndex, setSelectedSpanIndex] = useState(0)
   const [copyCounts, setCopyCounts] = useState<Record<CopyRole, number>>({ hook: 5, cta: 0, body: 0 })
   const [hookVariationMode, setHookVariationMode] = useState<HookVariationMode>('medium')
+  const [copyPrompt, setCopyPrompt] = useState('')
   const [copyStatus, setCopyStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [copyResult, setCopyResult] = useState<CopyVariationsResult | null>(null)
+  const [baseCreativeLayout, setBaseCreativeLayout] = useState<LayoutResult | null>(null)
   const [copyError, setCopyError] = useState('')
   const [selectedVariationKey, setSelectedVariationKey] = useState<SelectedVariationKey>(null)
   const [selectedDownloadKeys, setSelectedDownloadKeys] = useState<Set<string>>(new Set())
@@ -112,11 +117,24 @@ export default function Home() {
 
   const fileRef = useRef<HTMLInputElement>(null)
 
+  function handleFileInputChange(event: React.ChangeEvent<HTMLInputElement>) {
+    setSelectedFile(event.target.files?.[0] ?? null)
+  }
+
+  function handleDrop(event: React.DragEvent<HTMLLabelElement>) {
+    event.preventDefault()
+    const file = event.dataTransfer.files?.[0]
+    if (file?.type.startsWith('image/')) {
+      setSelectedFile(file)
+    }
+  }
+
   async function handleBuildCreative(e: React.FormEvent) {
     e.preventDefault()
-    const file = fileRef.current?.files?.[0]
+    const file = selectedFile ?? fileRef.current?.files?.[0]
     if (!file) return
 
+    setActiveTab('upload')
     setStep1Status('loading')
     setStep1Error('')
     setStep1Result(null)
@@ -128,6 +146,8 @@ export default function Home() {
     setSelectedSpanIndex(0)
     setCopyStatus('idle')
     setCopyResult(null)
+    setCopyPrompt('')
+    setBaseCreativeLayout(null)
     setSelectedVariationKey(null)
     setSelectedDownloadKeys(new Set())
     setBackgroundStatus('idle')
@@ -156,10 +176,14 @@ export default function Home() {
 
       setStep1Result(removeTextResult)
       setLayoutResult(layoutData)
+      setBaseCreativeLayout(cloneLayout(layoutData))
       setSelectedBlockId(layoutData.blocks?.[0]?.id ?? '')
       setSelectedSpanIndex(0)
       setStep1Status('done')
       setLayoutStatus('done')
+      setSelectedDownloadKeys(new Set([getOriginalVariationKey('original')]))
+      setActiveTab('workspace')
+      setEditMode(true)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error'
       setStep1Error(message)
@@ -240,7 +264,8 @@ export default function Home() {
     if (!layoutResult) return
     const layoutForVariations = cloneLayout(layoutResult)
 
-    commitSelectedVariationEdits()
+    commitCurrentEditorEdits()
+    setBaseCreativeLayout(layoutForVariations)
     setCopyStatus('loading')
     setCopyError('')
     setCopyResult(null)
@@ -253,15 +278,17 @@ export default function Home() {
           layout: layoutForVariations,
           counts: copyCounts,
           hookMode: hookVariationMode,
+          userPrompt: copyPrompt,
         }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'Something went wrong')
       const materializedResult = materializeCopyVariations(data, layoutForVariations, step1Result?.width, step1Result?.height)
       setCopyResult(materializedResult)
-      setSelectedDownloadKeys(new Set(getVariationKeys(materializedResult, 'original')))
+      setSelectedDownloadKeys(new Set([getOriginalVariationKey('original'), ...getVariationKeys(materializedResult, 'original')]))
       setSelectedVariationKey(null)
       setCopyStatus('done')
+      setVariationModalOpen(null)
     } catch (err) {
       setCopyError(err instanceof Error ? err.message : 'Unknown error')
       setCopyStatus('error')
@@ -269,7 +296,7 @@ export default function Home() {
   }
 
   async function handleGenerateBackgroundVariant() {
-    const file = fileRef.current?.files?.[0]
+    const file = selectedFile ?? fileRef.current?.files?.[0]
     if (!file || !step1Result) return
 
     setBackgroundStatus('loading')
@@ -290,10 +317,12 @@ export default function Home() {
       }
       setBackgroundVariants((current) => [...current, numberedBackground])
       setSelectedDownloadKeys((current) => {
-        if (!copyResult) return current
-        return new Set([...current, ...getVariationKeys(copyResult, numberedBackground.id)])
+        const nextKeys = [getOriginalVariationKey(numberedBackground.id)]
+        if (copyResult) nextKeys.push(...getVariationKeys(copyResult, numberedBackground.id))
+        return new Set([...current, ...nextKeys])
       })
       setBackgroundStatus('done')
+      setVariationModalOpen(null)
     } catch (err) {
       setBackgroundError(err instanceof Error ? err.message : 'Unknown error')
       setBackgroundStatus('error')
@@ -303,7 +332,7 @@ export default function Home() {
   function selectCopyVariation(backgroundId: string, role: CopyRole, variation: CopyVariation) {
     if (!layoutResult) return
 
-    commitSelectedVariationEdits()
+    commitCurrentEditorEdits()
 
     const nextLayout = cloneLayout(variation.layout ?? applyVariationPatches(
       layoutResult,
@@ -319,9 +348,23 @@ export default function Home() {
     setEditMode(true)
   }
 
+  function selectOriginalCreative(backgroundId: string) {
+    const sourceLayout = baseCreativeLayout ?? layoutResult
+    if (!sourceLayout) return
+
+    commitCurrentEditorEdits()
+    const nextLayout = cloneLayout(sourceLayout)
+    setLayoutResult(nextLayout)
+    setSelectedBlockId(nextLayout.blocks[0]?.id ?? '')
+    setSelectedSpanIndex(0)
+    setEditorBackgroundId(backgroundId)
+    setSelectedVariationKey(null)
+    setEditMode(true)
+  }
+
   function toggleEditMode() {
     if (editMode) {
-      commitSelectedVariationEdits()
+      commitCurrentEditorEdits()
       setEditMode(false)
       return
     }
@@ -365,29 +408,21 @@ export default function Home() {
     })
   }
 
+  function commitCurrentEditorEdits() {
+    if (!layoutResult) return
+
+    if (selectedVariationKey) {
+      commitSelectedVariationEdits()
+      return
+    }
+
+    setBaseCreativeLayout(cloneLayout(layoutResult))
+  }
+
   function nudgeSelectedBlock(dx: number, dy: number) {
     const block = layoutResult?.blocks.find((item) => item.id === selectedBlockId)
     if (!block) return
     updateSelectedBlock({ x: block.x + dx, y: block.y + dy })
-  }
-
-  function centerSelectedRow() {
-    const selectedBlock = layoutResult?.blocks.find((item) => item.id === selectedBlockId)
-    if (!layoutResult || !step1Result || !selectedBlock) return
-
-    const rowBlocks = getRowBlocks(layoutResult.blocks, selectedBlock)
-    const left = Math.min(...rowBlocks.map((block) => block.x))
-    const right = Math.max(...rowBlocks.map((block) => block.x + block.width))
-    const targetLeft = Math.round((step1Result.width - (right - left)) / 2)
-    const deltaX = targetLeft - left
-    const rowBlockIds = new Set(rowBlocks.map((block) => block.id))
-
-    setLayoutResult({
-      ...layoutResult,
-      blocks: layoutResult.blocks.map((block) =>
-        rowBlockIds.has(block.id) ? { ...block, x: block.x + deltaX } : block,
-      ),
-    })
   }
 
   const selectedBlock = layoutResult?.blocks.find((block) => block.id === selectedBlockId) ?? null
@@ -405,53 +440,152 @@ export default function Home() {
       ]
     : []
   const editorBackground = backgrounds.find((background) => background.id === editorBackgroundId) ?? backgrounds[0]
+  const canOpenWorkspace = step1Status === 'done' && layoutStatus === 'done' && Boolean(step1Result && layoutResult)
+  const isBuilding = step1Status === 'loading' || layoutStatus === 'loading'
 
   return (
-    <main className="flex min-h-screen flex-col items-center gap-8 p-6">
-      <h1 className="text-2xl font-semibold mt-8">Creatives App</h1>
+    <main className="min-h-screen bg-[#f7f4fb] text-[#17121f]">
+      <header className="sticky top-0 z-30 border-b border-[#e6deee] bg-white/90 backdrop-blur">
+        <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between px-5">
+          <div className="flex items-center gap-3">
+            <div className="grid h-9 w-9 place-items-center rounded-lg bg-[#7c3aed] text-sm font-black text-white">
+              C
+            </div>
+            <div>
+              <h1 className="text-sm font-semibold tracking-tight">Creatives App</h1>
+              <p className="text-xs text-[#8a8294]">Editable AI creative workspace</p>
+            </div>
+          </div>
 
-      {/* Step 1 */}
-      <section className="flex flex-col items-center gap-4">
-        <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wide">Build Editable Creative</h2>
-        <form onSubmit={handleBuildCreative} className="flex flex-col items-center gap-3">
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            required
-            className="border border-gray-300 rounded p-2 text-sm"
-          />
-          <button
-            type="submit"
-            disabled={step1Status === 'loading' || layoutStatus === 'loading'}
-            className="bg-black text-white rounded-full px-6 py-2 text-sm disabled:opacity-50"
+          <nav className="flex rounded-full border border-[#e4ddeb] bg-[#f8f5fb] p-1 text-sm">
+            <button
+              type="button"
+              onClick={() => setActiveTab('upload')}
+              className={[
+                'rounded-full px-4 py-2 transition',
+                activeTab === 'upload' ? 'bg-white text-[#5b21b6] shadow-sm' : 'text-[#756c81]',
+              ].join(' ')}
+            >
+              Upload
+            </button>
+            <button
+              type="button"
+              disabled={!canOpenWorkspace}
+              onClick={() => setActiveTab('workspace')}
+              className={[
+                'rounded-full px-4 py-2 transition disabled:cursor-not-allowed disabled:opacity-40',
+                activeTab === 'workspace' ? 'bg-white text-[#5b21b6] shadow-sm' : 'text-[#756c81]',
+              ].join(' ')}
+            >
+              Workspace
+            </button>
+          </nav>
+        </div>
+      </header>
+
+      {activeTab === 'upload' && (
+        <section className="mx-auto grid min-h-[calc(100vh-4rem)] max-w-5xl place-items-center px-5 py-10">
+          <form
+            onSubmit={handleBuildCreative}
+            className="w-full max-w-2xl rounded-2xl border border-[#e5ddec] bg-white p-6 shadow-[0_24px_80px_rgba(35,20,55,0.08)]"
           >
-            {step1Status === 'loading' || layoutStatus === 'loading' ? 'Building…' : 'Build Creative'}
-          </button>
-        </form>
-        {(step1Status === 'loading' || layoutStatus === 'loading') && (
-          <p className="text-sm text-gray-400">Removing text and extracting editable layout in parallel…</p>
-        )}
-        {(step1Status === 'error' || layoutStatus === 'error') && (
-          <p className="text-sm text-red-500">{step1Error || layoutError}</p>
-        )}
-      </section>
+            <div className="mb-6">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8b5cf6]">Upload creative</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight">Analyze a static ad creative</h2>
+              <p className="mt-2 text-sm leading-6 text-[#766d81]">
+                Upload an image, then the app will remove text and extract an editable text layout in parallel.
+              </p>
+            </div>
 
-      {step1Status === 'done' && layoutStatus === 'done' && step1Result && layoutResult && (
-        <section className="flex w-full max-w-5xl flex-col items-center gap-4">
-          <>
-            <div className="grid w-full gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
-              <div className="flex flex-col items-center gap-3">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={toggleEditMode}
-                    className="rounded-full border border-gray-300 px-4 py-2 text-sm"
-                  >
-                    {editMode ? 'Done Editing' : 'Edit'}
-                  </button>
-                  <p className="text-xs text-gray-400">{layoutResult.blocks.length} text blocks</p>
+            <input
+              id="creative-upload"
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              required={!selectedFile}
+              onChange={handleFileInputChange}
+              className="sr-only"
+            />
+            <label
+              htmlFor="creative-upload"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={handleDrop}
+              className="flex min-h-56 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-[#c8b9df] bg-[#fbf9fe] px-5 text-center transition hover:border-[#8b5cf6] hover:bg-[#f6f0ff]"
+            >
+              <span className="grid h-12 w-12 place-items-center rounded-full bg-[#ede7f8] text-xl text-[#6d28d9]">
+                +
+              </span>
+              <span className="mt-4 text-sm font-semibold">
+                {selectedFile ? selectedFile.name : 'Choose image or drop it here'}
+              </span>
+              <span className="mt-1 text-xs text-[#8f8799]">PNG, JPG, WebP creative screenshot</span>
+            </label>
+
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <button
+                type="submit"
+                disabled={isBuilding || !selectedFile}
+                className="rounded-xl bg-[#7c3aed] px-6 py-3 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(124,58,237,0.28)] transition hover:bg-[#6d28d9] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isBuilding ? 'Analyzing creative...' : 'Analyze creative'}
+              </button>
+              {canOpenWorkspace && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('workspace')}
+                  className="rounded-xl border border-[#ddd4e8] px-5 py-3 text-sm font-semibold text-[#5b21b6] transition hover:bg-[#f6f0ff]"
+                >
+                  Open workspace
+                </button>
+              )}
+            </div>
+
+            {isBuilding && <AnalyzeCreativeLoader />}
+
+            {(step1Status === 'error' || layoutStatus === 'error') && (
+              <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{step1Error || layoutError}</p>
+            )}
+          </form>
+        </section>
+      )}
+
+      {activeTab === 'workspace' && step1Result && layoutResult && editorBackground && (
+        <section className="mx-auto flex max-w-[1440px] flex-col gap-6 px-5 py-6">
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="min-w-0 rounded-2xl border border-[#e5ddec] bg-white p-4 shadow-[0_24px_80px_rgba(35,20,55,0.08)]">
+              <div className="mb-4 flex flex-col gap-3 border-b border-[#eee8f4] pb-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8b5cf6]">Workspace</p>
+                  <h2 className="mt-1 text-lg font-semibold">Current creative</h2>
+                  <p className="text-xs text-[#8a8294]">{layoutResult.blocks.length} text blocks · {editorBackground.label}</p>
                 </div>
-                  <CreativeCanvas
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={toggleEditMode}
+                    className="rounded-xl border border-[#ddd4e8] px-4 py-2 text-sm font-semibold text-[#4c3b63] transition hover:bg-[#f8f4ff]"
+                  >
+                    {editMode ? 'Done editing' : 'Edit'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVariationModalOpen('text')}
+                    className="rounded-xl bg-[#7c3aed] px-4 py-2 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(124,58,237,0.24)] transition hover:bg-[#6d28d9]"
+                  >
+                    Generate text variations
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVariationModalOpen('visual')}
+                    className="rounded-xl border border-[#cfc2df] bg-white px-4 py-2 text-sm font-semibold text-[#5b21b6] transition hover:bg-[#f6f0ff]"
+                  >
+                    Generate visual variations
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex min-h-[620px] items-start justify-center overflow-auto rounded-xl bg-[#f3eff8] p-6">
+                <CreativeCanvas
                   imagePath={editorBackground.imagePath}
                   width={step1Result.width}
                   height={step1Result.height}
@@ -462,48 +596,62 @@ export default function Home() {
                   onSelectBlock={selectBlock}
                 />
               </div>
-              <EditorPanel
-                blocks={layoutResult.blocks}
-                selectedBlock={selectedBlock}
-                selectedBlockId={selectedBlockId}
-                selectedSpan={selectedSpan}
-                selectedSpanIndex={Math.min(selectedSpanIndex, Math.max(0, selectedSpans.length - 1))}
-                editMode={editMode}
-                canvasWidth={step1Result.width}
-                onSelectBlock={selectBlock}
-                onSelectSpan={setSelectedSpanIndex}
-                onUpdateBlock={updateSelectedBlock}
-                onUpdateSpan={updateSelectedSpan}
-                onNudgeBlock={nudgeSelectedBlock}
-                onCenterRow={centerSelectedRow}
-                onDeleteBlock={deleteSelectedBlock}
-              />
             </div>
-              <CopyVariationsPanel
-              backgrounds={backgrounds}
+
+            <EditorPanel
+              blocks={layoutResult.blocks}
+              selectedBlock={selectedBlock}
+              selectedBlockId={selectedBlockId}
+              selectedSpan={selectedSpan}
+              selectedSpanIndex={Math.min(selectedSpanIndex, Math.max(0, selectedSpans.length - 1))}
+              editMode={editMode}
               canvasWidth={step1Result.width}
-              canvasHeight={step1Result.height}
-              baseLayout={layoutResult}
-              counts={copyCounts}
-              hookMode={hookVariationMode}
-              backgroundMode={backgroundMode}
-              backgroundStatus={backgroundStatus}
-              status={copyStatus}
-              result={copyResult}
-              error={copyError}
-              backgroundError={backgroundError}
-              onChangeCounts={setCopyCounts}
-              onChangeHookMode={setHookVariationMode}
-              onChangeBackgroundMode={setBackgroundMode}
-              onGenerate={handleGenerateCopyVariations}
-              onGenerateBackground={handleGenerateBackgroundVariant}
-              onSelectVariation={selectCopyVariation}
-              selectedVariationKey={selectedVariationKey}
-              selectedDownloadKeys={selectedDownloadKeys}
-              onToggleDownloadSelection={toggleDownloadSelection}
+              onSelectBlock={selectBlock}
+              onSelectSpan={setSelectedSpanIndex}
+              onUpdateBlock={updateSelectedBlock}
+              onUpdateSpan={updateSelectedSpan}
+              onNudgeBlock={nudgeSelectedBlock}
+              onDeleteBlock={deleteSelectedBlock}
             />
-          </>
+          </div>
+
+          <CopyVariationsPanel
+            backgrounds={backgrounds}
+            canvasWidth={step1Result.width}
+            canvasHeight={step1Result.height}
+            baseLayout={baseCreativeLayout ?? layoutResult}
+            status={copyStatus}
+            result={copyResult}
+            error={copyError}
+            onSelectOriginal={selectOriginalCreative}
+            onSelectVariation={selectCopyVariation}
+            selectedBackgroundId={editorBackground.id}
+            selectedVariationKey={selectedVariationKey}
+            selectedDownloadKeys={selectedDownloadKeys}
+            onToggleDownloadSelection={toggleDownloadSelection}
+          />
         </section>
+      )}
+
+      {variationModalOpen && (
+        <VariationSettingsModal
+          mode={variationModalOpen}
+          counts={copyCounts}
+          hookMode={hookVariationMode}
+          copyPrompt={copyPrompt}
+          backgroundMode={backgroundMode}
+          copyStatus={copyStatus}
+          backgroundStatus={backgroundStatus}
+          copyError={copyError}
+          backgroundError={backgroundError}
+          onClose={() => setVariationModalOpen(null)}
+          onChangeCounts={setCopyCounts}
+          onChangeHookMode={setHookVariationMode}
+          onChangeCopyPrompt={setCopyPrompt}
+          onChangeBackgroundMode={setBackgroundMode}
+          onGenerateCopy={handleGenerateCopyVariations}
+          onGenerateBackground={handleGenerateBackgroundVariant}
+        />
       )}
     </main>
   )
@@ -514,20 +662,12 @@ function CopyVariationsPanel({
   canvasWidth,
   canvasHeight,
   baseLayout,
-  counts,
-  hookMode,
-  backgroundMode,
-  backgroundStatus,
   status,
   result,
   error,
-  backgroundError,
-  onChangeCounts,
-  onChangeHookMode,
-  onChangeBackgroundMode,
-  onGenerate,
-  onGenerateBackground,
+  onSelectOriginal,
   onSelectVariation,
+  selectedBackgroundId,
   selectedVariationKey,
   selectedDownloadKeys,
   onToggleDownloadSelection,
@@ -536,55 +676,34 @@ function CopyVariationsPanel({
   canvasWidth: number
   canvasHeight: number
   baseLayout: LayoutResult
-  counts: Record<CopyRole, number>
-  hookMode: HookVariationMode
-  backgroundMode: Exclude<BackgroundMode, 'original'>
-  backgroundStatus: 'idle' | 'loading' | 'done' | 'error'
   status: 'idle' | 'loading' | 'done' | 'error'
   result: CopyVariationsResult | null
   error: string
-  backgroundError: string
-  onChangeCounts: (counts: Record<CopyRole, number>) => void
-  onChangeHookMode: (mode: HookVariationMode) => void
-  onChangeBackgroundMode: (mode: Exclude<BackgroundMode, 'original'>) => void
-  onGenerate: () => void
-  onGenerateBackground: () => void
+  onSelectOriginal: (backgroundId: string) => void
   onSelectVariation: (backgroundId: string, role: CopyRole, variation: CopyVariation) => void
+  selectedBackgroundId: string
   selectedVariationKey: SelectedVariationKey
   selectedDownloadKeys: Set<string>
   onToggleDownloadSelection: (key: string, selected: boolean) => void
 }) {
-  const totalCount = counts.hook + counts.cta + counts.body
   const [downloadStatus, setDownloadStatus] = useState<'idle' | 'loading' | 'error'>('idle')
   const [downloadError, setDownloadError] = useState('')
   const exportNodeRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
-  function updateCount(role: CopyRole, value: number) {
-    onChangeCounts({
-      ...counts,
-      [role]: Math.max(0, Math.min(10, Math.floor(value || 0))),
-    })
-  }
-
   async function handleDownloadSelected() {
-    if (!result || selectedDownloadKeys.size === 0) return
+    if (selectedDownloadKeys.size === 0) return
 
     setDownloadStatus('loading')
     setDownloadError('')
 
     try {
       await document.fonts?.ready
-      const selectedItems = result.variations.flatMap((group) =>
-        group.items.flatMap((item) =>
-          backgrounds
-            .filter((background) => selectedDownloadKeys.has(getVariationKey(background.id, group.role, item.id)))
-            .map((background) => ({ background, role: group.role, item })),
-        ),
+      const selectedItems = getExportItems(backgrounds, result, baseLayout, canvasWidth, canvasHeight).filter((item) =>
+        selectedDownloadKeys.has(item.key),
       )
 
       if (selectedItems.length === 1) {
-        const [{ background, role, item }] = selectedItems
-        const key = getVariationKey(background.id, role, item.id)
+        const [{ key }] = selectedItems
         const node = exportNodeRefs.current[key]
         if (!node) throw new Error('Selected variation is not ready for export')
         const dataUrl = await toPng(node, { cacheBust: true, pixelRatio: 1, backgroundColor: '#ffffff' })
@@ -595,8 +714,7 @@ function CopyVariationsPanel({
 
       const zip = new JSZip()
 
-      for (const { background, role, item } of selectedItems) {
-        const key = getVariationKey(background.id, role, item.id)
+      for (const { key } of selectedItems) {
         const node = exportNodeRefs.current[key]
         if (!node) continue
         const dataUrl = await toPng(node, { cacheBust: true, pixelRatio: 1, backgroundColor: '#ffffff' })
@@ -613,168 +731,386 @@ function CopyVariationsPanel({
   }
 
   return (
-    <section className="flex w-full max-w-5xl flex-col gap-4 rounded border border-gray-200 p-4">
-      <div className="grid gap-3 sm:grid-cols-3">
-        <div className="flex flex-col gap-2">
-          <NumberField label="Hook variations" value={counts.hook} onChange={(value) => updateCount('hook', value)} />
-          <label className="flex flex-col gap-1 text-xs text-gray-500">
-            Hook mode
-            <select
-              value={hookMode}
-              onChange={(event) => onChangeHookMode(event.target.value as HookVariationMode)}
-              className="rounded border border-gray-300 bg-white p-2 text-sm text-black"
-            >
-              <option value="light">Light variation</option>
-              <option value="medium">Medium variation</option>
-              <option value="strong">Strong variation</option>
-            </select>
-          </label>
+    <section className="rounded-2xl border border-[#e5ddec] bg-white p-5 shadow-[0_24px_80px_rgba(35,20,55,0.08)]">
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8b5cf6]">Creative set</p>
+          <h2 className="mt-1 text-lg font-semibold">Original and generated variations</h2>
         </div>
-        <NumberField label="CTA variations" value={counts.cta} onChange={(value) => updateCount('cta', value)} />
-        <NumberField label="Body variations" value={counts.body} onChange={(value) => updateCount('body', value)} />
-      </div>
-
-      <button
-        className="self-start rounded-full bg-black px-5 py-2 text-sm text-white disabled:opacity-50"
-        disabled={status === 'loading' || totalCount === 0}
-        onClick={onGenerate}
-      >
-        {status === 'loading' ? 'Generating copy…' : 'Generate Copy Variations'}
-      </button>
-
-      <div className="flex flex-col gap-3 border-t border-gray-200 pt-4 sm:flex-row sm:items-end">
-        <label className="flex flex-col gap-1 text-xs text-gray-500">
-          Background mode
-          <select
-            value={backgroundMode}
-            onChange={(event) => onChangeBackgroundMode(event.target.value as Exclude<BackgroundMode, 'original'>)}
-            className="rounded border border-gray-300 bg-white p-2 text-sm text-black"
-          >
-            <option value="light">Light background</option>
-            <option value="medium">Medium background</option>
-            <option value="strong">Strong background</option>
-          </select>
-        </label>
         <button
-          className="self-start rounded-full border border-gray-300 px-5 py-2 text-sm disabled:opacity-50"
-          disabled={backgroundStatus === 'loading'}
-          onClick={onGenerateBackground}
+          className="rounded-xl bg-[#7c3aed] px-5 py-3 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(124,58,237,0.24)] transition hover:bg-[#6d28d9] disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={downloadStatus === 'loading' || selectedDownloadKeys.size === 0}
+          onClick={handleDownloadSelected}
         >
-          {backgroundStatus === 'loading' ? 'Generating background…' : 'Generate Background Variant'}
+          {downloadStatus === 'loading'
+            ? 'Preparing PNG...'
+            : `Download selected PNG (${selectedDownloadKeys.size})`}
         </button>
       </div>
-      {backgroundStatus === 'error' && <p className="text-sm text-red-500">{backgroundError}</p>}
 
-      {status === 'error' && <p className="text-sm text-red-500">{error}</p>}
+      {status === 'error' && <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>}
+      {downloadStatus === 'error' && <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{downloadError}</p>}
 
-      {status === 'done' && result && (
-        <div className="flex flex-col gap-6">
-          {backgrounds.map((background) => (
+      <div className="flex flex-col gap-8">
+        {backgrounds.map((background) => {
+          const originalKey = getOriginalVariationKey(background.id)
+
+          return (
             <div key={background.id} className="flex flex-col gap-5">
-              <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500">{background.label}</h3>
-              {result.variations.map((group) => (
-                <div key={`${background.id}-${group.role}`} className="flex flex-col gap-3">
-                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">{group.role}</h4>
-                  {group.reason && <p className="text-sm text-gray-400">{group.reason}</p>}
-                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                    {group.items.map((item) => {
-                      const variationLayout = item.layout ?? applyVariationPatches(baseLayout, item, canvasWidth, canvasHeight)
-                      const isSelected =
-                        selectedVariationKey?.backgroundId === background.id &&
-                        selectedVariationKey.role === group.role &&
-                        selectedVariationKey.id === item.id
-                      const variationKey = getVariationKey(background.id, group.role, item.id)
+              <div className="flex items-center justify-between border-b border-[#eee8f4] pb-3">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-[#756c81]">{background.label}</h3>
+                <span className="rounded-full bg-[#f2edf8] px-3 py-1 text-xs font-medium text-[#6d28d9]">{background.mode}</span>
+              </div>
 
-                      return (
-                        <div
-                          key={variationKey}
-                          className={[
-                            'flex flex-col items-center gap-2 rounded border p-3',
-                            isSelected ? 'border-blue-500' : 'border-gray-200',
-                          ].join(' ')}
-                        >
-                          <label className="flex w-full items-center gap-2 text-xs text-gray-500">
-                            <input
-                              type="checkbox"
-                              checked={selectedDownloadKeys.has(variationKey)}
-                              onChange={(event) => onToggleDownloadSelection(variationKey, event.target.checked)}
-                            />
-                            Export
-                          </label>
-                          <CreativeCanvas
-                            imagePath={background.imagePath}
-                            width={canvasWidth}
-                            height={canvasHeight}
-                            maxPreviewWidth={190}
-                            globalStyles={variationLayout.globalStyles}
-                            blocks={variationLayout.blocks}
-                          />
-                          <button
-                            className="rounded-full border border-gray-300 px-4 py-2 text-sm"
-                            onClick={() => onSelectVariation(background.id, group.role, item)}
-                          >
-                            {isSelected ? 'Selected' : 'Select'}
-                          </button>
-                        </div>
-                      )
-                    })}
-                  </div>
+              <div className="flex flex-col gap-3">
+                <h4 className="text-xs font-semibold uppercase tracking-[0.16em] text-[#8a8294]">Original creative</h4>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <VariationCard
+                    title="Original creative"
+                    subtitle="Edited base layout"
+                    exportKey={originalKey}
+                    checked={selectedDownloadKeys.has(originalKey)}
+                    selected={!selectedVariationKey && selectedBackgroundId === background.id}
+                    onToggleExport={(checked) => onToggleDownloadSelection(originalKey, checked)}
+                    onSelect={() => onSelectOriginal(background.id)}
+                  >
+                    <CreativeCanvas
+                      imagePath={background.imagePath}
+                      width={canvasWidth}
+                      height={canvasHeight}
+                      maxPreviewWidth={190}
+                      globalStyles={baseLayout.globalStyles}
+                      blocks={baseLayout.blocks}
+                    />
+                  </VariationCard>
                 </div>
-              ))}
-              <div className="border-b border-gray-200" />
+              </div>
+
+              {result ? (
+                result.variations.map((group) => (
+                  <div key={`${background.id}-${group.role}`} className="flex flex-col gap-3">
+                    <h4 className="text-xs font-semibold uppercase tracking-[0.16em] text-[#8a8294]">{group.role}</h4>
+                    {group.reason && <p className="text-sm text-[#8a8294]">{group.reason}</p>}
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                      {group.items.map((item) => {
+                        const variationLayout = item.layout ?? applyVariationPatches(baseLayout, item, canvasWidth, canvasHeight)
+                        const isSelected =
+                          selectedVariationKey?.backgroundId === background.id &&
+                          selectedVariationKey.role === group.role &&
+                          selectedVariationKey.id === item.id
+                        const variationKey = getVariationKey(background.id, group.role, item.id)
+
+                        return (
+                          <VariationCard
+                            key={variationKey}
+                            title={`${group.role} ${item.id.split('-').at(-1) ?? ''}`.trim()}
+                            subtitle={item.patches.map((patch) => patch.blockId).join(', ')}
+                            exportKey={variationKey}
+                            checked={selectedDownloadKeys.has(variationKey)}
+                            selected={isSelected}
+                            onToggleExport={(checked) => onToggleDownloadSelection(variationKey, checked)}
+                            onSelect={() => onSelectVariation(background.id, group.role, item)}
+                          >
+                            <CreativeCanvas
+                              imagePath={background.imagePath}
+                              width={canvasWidth}
+                              height={canvasHeight}
+                              maxPreviewWidth={190}
+                              globalStyles={variationLayout.globalStyles}
+                              blocks={variationLayout.blocks}
+                            />
+                          </VariationCard>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-xl border border-dashed border-[#d9cfe7] bg-[#fbf9fe] p-5 text-sm text-[#756c81]">
+                  Generate copy or background variants to fill this section.
+                </div>
+              )}
             </div>
-          ))}
-          <div className="flex flex-col gap-2 border-t border-gray-200 pt-4">
-            <button
-              className="self-start rounded-full bg-black px-5 py-2 text-sm text-white disabled:opacity-50"
-              disabled={downloadStatus === 'loading' || selectedDownloadKeys.size === 0}
-              onClick={handleDownloadSelected}
-            >
-              {downloadStatus === 'loading'
-                ? 'Preparing PNG…'
-                : `Download selected PNG (${selectedDownloadKeys.size})`}
-            </button>
-            {downloadStatus === 'error' && <p className="text-sm text-red-500">{downloadError}</p>}
-          </div>
+          )
+        })}
+      </div>
+
+      <div
+        style={{
+          position: 'fixed',
+          left: -100000,
+          top: 0,
+          pointerEvents: 'none',
+        }}
+      >
+        {getExportItems(backgrounds, result, baseLayout, canvasWidth, canvasHeight).map((item) => (
           <div
-            style={{
-              position: 'fixed',
-              left: -100000,
-              top: 0,
-              pointerEvents: 'none',
+            key={item.key}
+            ref={(node) => {
+              exportNodeRefs.current[item.key] = node
             }}
           >
-            {backgrounds.flatMap((background) =>
-              result.variations.flatMap((group) =>
-                group.items.map((item) => {
-                  const variationKey = getVariationKey(background.id, group.role, item.id)
-                  const variationLayout = item.layout ?? applyVariationPatches(baseLayout, item, canvasWidth, canvasHeight)
+            <CreativeCanvas
+              imagePath={item.background.imagePath}
+              width={canvasWidth}
+              height={canvasHeight}
+              maxPreviewWidth={canvasWidth}
+              frame={false}
+              globalStyles={item.layout.globalStyles}
+              blocks={item.layout.blocks}
+            />
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
 
-                  return (
-                    <div
-                      key={variationKey}
-                      ref={(node) => {
-                        exportNodeRefs.current[variationKey] = node
-                      }}
-                    >
-                      <CreativeCanvas
-                        imagePath={background.imagePath}
-                        width={canvasWidth}
-                        height={canvasHeight}
-                        maxPreviewWidth={canvasWidth}
-                        frame={false}
-                        globalStyles={variationLayout.globalStyles}
-                        blocks={variationLayout.blocks}
-                      />
-                    </div>
-                  )
-                }),
-              ),
-            )}
+function VariationSettingsModal({
+  mode,
+  counts,
+  hookMode,
+  copyPrompt,
+  backgroundMode,
+  copyStatus,
+  backgroundStatus,
+  copyError,
+  backgroundError,
+  onClose,
+  onChangeCounts,
+  onChangeHookMode,
+  onChangeCopyPrompt,
+  onChangeBackgroundMode,
+  onGenerateCopy,
+  onGenerateBackground,
+}: {
+  mode: 'text' | 'visual'
+  counts: Record<CopyRole, number>
+  hookMode: HookVariationMode
+  copyPrompt: string
+  backgroundMode: Exclude<BackgroundMode, 'original'>
+  copyStatus: 'idle' | 'loading' | 'done' | 'error'
+  backgroundStatus: 'idle' | 'loading' | 'done' | 'error'
+  copyError: string
+  backgroundError: string
+  onClose: () => void
+  onChangeCounts: (counts: Record<CopyRole, number>) => void
+  onChangeHookMode: (mode: HookVariationMode) => void
+  onChangeCopyPrompt: (prompt: string) => void
+  onChangeBackgroundMode: (mode: Exclude<BackgroundMode, 'original'>) => void
+  onGenerateCopy: () => void
+  onGenerateBackground: () => void
+}) {
+  const totalCount = counts.hook + counts.cta + counts.body
+
+  function updateCount(role: CopyRole, value: number) {
+    onChangeCounts({
+      ...counts,
+      [role]: Math.max(0, Math.min(10, Math.floor(value || 0))),
+    })
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-[#1f1730]/45 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-2xl rounded-2xl border border-[#e6deee] bg-white p-5 shadow-[0_30px_100px_rgba(21,10,36,0.28)]">
+        <div className="mb-5 flex items-start justify-between gap-4 border-b border-[#eee8f4] pb-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8b5cf6]">
+              {mode === 'text' ? 'Text generation' : 'Visual generation'}
+            </p>
+            <h2 className="mt-1 text-xl font-semibold">
+              {mode === 'text' ? 'Create text variations' : 'Create background variants'}
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid h-9 w-9 place-items-center rounded-lg border border-[#e0d7ea] text-lg text-[#756c81] transition hover:bg-[#f7f4fb]"
+            aria-label="Close"
+          >
+            x
+          </button>
+        </div>
+
+        <div className={mode === 'text' ? 'grid gap-5' : 'grid gap-5'}>
+          {mode === 'text' && (
+          <div className="rounded-xl border border-[#eee8f4] p-4">
+            <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-[#756c81]">Copy variations</h3>
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <NumberField label="Hook" value={counts.hook} onChange={(value) => updateCount('hook', value)} />
+              <NumberField label="CTA" value={counts.cta} onChange={(value) => updateCount('cta', value)} />
+              <NumberField label="Body" value={counts.body} onChange={(value) => updateCount('body', value)} />
+            </div>
+
+            <label className="mt-4 flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#8a8294]">
+              Hook mode
+              <select
+                value={hookMode}
+                onChange={(event) => onChangeHookMode(event.target.value as HookVariationMode)}
+                className="h-11 rounded-lg border border-[#ddd4e8] bg-white px-3 text-sm font-medium normal-case tracking-normal text-[#17121f] outline-none transition focus:border-[#8b5cf6]"
+              >
+                <option value="light">Light variation</option>
+                <option value="medium">Medium variation</option>
+                <option value="strong">Strong variation</option>
+              </select>
+            </label>
+
+            <label className="mt-4 flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#8a8294]">
+              Generation prompt
+              <textarea
+                value={copyPrompt}
+                onChange={(event) => onChangeCopyPrompt(event.target.value)}
+                rows={4}
+                maxLength={2000}
+                placeholder="e.g. focus hooks on time savings, keep tone direct, avoid hype"
+                className="resize-y rounded-lg border border-[#ddd4e8] p-3 text-sm font-medium normal-case leading-6 tracking-normal text-[#17121f] outline-none transition placeholder:text-[#aaa2b4] focus:border-[#8b5cf6]"
+              />
+            </label>
+
+            <button
+              type="button"
+              disabled={copyStatus === 'loading' || totalCount === 0}
+              onClick={onGenerateCopy}
+              className="mt-4 w-full rounded-xl bg-[#7c3aed] px-5 py-3 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(124,58,237,0.24)] transition hover:bg-[#6d28d9] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {copyStatus === 'loading' ? 'Generating copy...' : 'Generate copy variations'}
+            </button>
+            {copyStatus === 'error' && <p className="mt-3 text-sm text-red-600">{copyError}</p>}
+          </div>
+          )}
+
+          {mode === 'visual' && (
+          <div className="rounded-xl border border-[#eee8f4] p-4">
+            <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-[#756c81]">Background</h3>
+            <label className="mt-4 flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#8a8294]">
+              Mode
+              <select
+                value={backgroundMode}
+                onChange={(event) => onChangeBackgroundMode(event.target.value as Exclude<BackgroundMode, 'original'>)}
+                className="h-11 rounded-lg border border-[#ddd4e8] bg-white px-3 text-sm font-medium normal-case tracking-normal text-[#17121f] outline-none transition focus:border-[#8b5cf6]"
+              >
+                <option value="light">Light background</option>
+                <option value="medium">Medium background</option>
+                <option value="strong">Strong background</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              disabled={backgroundStatus === 'loading'}
+              onClick={onGenerateBackground}
+              className="mt-4 w-full rounded-xl border border-[#cfc2df] px-5 py-3 text-sm font-semibold text-[#5b21b6] transition hover:bg-[#f6f0ff] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {backgroundStatus === 'loading' ? 'Generating...' : 'Generate background'}
+            </button>
+            {backgroundStatus === 'error' && <p className="mt-3 text-sm text-red-600">{backgroundError}</p>}
+          </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AnalyzeCreativeLoader() {
+  const steps = [
+    'Removing original text from the image',
+    'Rebuilding clean background',
+    'Detecting text blocks and roles',
+    'Laying the creative into editable layers',
+  ]
+
+  return (
+    <div className="mt-6 overflow-hidden rounded-2xl border border-[#e6deee] bg-[#fbf9fe] p-5">
+      <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
+        <div className="relative h-28 w-full shrink-0 overflow-hidden rounded-xl bg-[#f1ebfa] sm:w-36">
+          <div className="absolute left-8 top-7 h-16 w-20 animate-[layerFloat_2.8s_ease-in-out_infinite] rounded-lg border border-[#c4b5fd] bg-white/80 shadow-lg" />
+          <div className="absolute left-12 top-10 h-16 w-20 animate-[layerFloat_2.8s_ease-in-out_infinite_0.18s] rounded-lg border border-[#a78bfa] bg-white/70 shadow-lg" />
+          <div className="absolute left-16 top-5 h-16 w-20 animate-[layerFloat_2.8s_ease-in-out_infinite_0.36s] rounded-lg border border-[#8b5cf6] bg-white/90 shadow-lg" />
+          <div className="absolute left-6 top-20 h-1 w-24 animate-pulse rounded-full bg-[#7c3aed]/30" />
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8b5cf6]">Analyzing</p>
+            <p className="text-xs font-medium text-[#8a8294]">~1-2 min</p>
+          </div>
+          <h3 className="mt-2 text-lg font-semibold">Раскладываю креатив на слои</h3>
+          <p className="mt-1 text-sm leading-6 text-[#756c81]">
+            Отделяю фон от текста и собираю редактируемую структуру блоков.
+          </p>
+
+          <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#e8e1f1]">
+            <div className="h-full w-1/2 animate-[progressSweep_1.8s_ease-in-out_infinite] rounded-full bg-[#7c3aed]" />
+          </div>
+
+          <div className="mt-4 grid gap-2 text-sm text-[#685f73] sm:grid-cols-2">
+            {steps.map((step) => (
+              <div key={step} className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-[#8b5cf6]" />
+                <span>{step}</span>
+              </div>
+            ))}
           </div>
         </div>
-      )}
-    </section>
+      </div>
+    </div>
+  )
+}
+
+function VariationCard({
+  title,
+  subtitle,
+  exportKey,
+  checked,
+  selected,
+  children,
+  onToggleExport,
+  onSelect,
+}: {
+  title: string
+  subtitle: string
+  exportKey: string
+  checked: boolean
+  selected: boolean
+  children: React.ReactNode
+  onToggleExport: (checked: boolean) => void
+  onSelect: () => void
+}) {
+  return (
+    <div
+      className={[
+        'flex flex-col gap-3 rounded-xl border bg-[#fbf9fe] p-3 transition',
+        selected ? 'border-[#7c3aed] shadow-[0_12px_34px_rgba(124,58,237,0.16)]' : 'border-[#e5ddec]',
+      ].join(' ')}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold">{title}</p>
+          <p className="truncate text-xs text-[#8a8294]">{subtitle}</p>
+        </div>
+        <label className="flex shrink-0 items-center gap-2 text-xs font-medium text-[#756c81]">
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={(event) => onToggleExport(event.target.checked)}
+            className="h-4 w-4 accent-[#7c3aed]"
+          />
+          Export
+        </label>
+      </div>
+      <div className="flex justify-center">{children}</div>
+      <button
+        type="button"
+        className={[
+          'rounded-lg px-4 py-2 text-sm font-semibold transition',
+          selected ? 'bg-[#7c3aed] text-white' : 'border border-[#ddd4e8] bg-white text-[#5b21b6] hover:bg-[#f6f0ff]',
+        ].join(' ')}
+        onClick={onSelect}
+      >
+        {selected ? 'Selected' : 'Select'}
+      </button>
+      <span className="sr-only">{exportKey}</span>
+    </div>
   )
 }
 
@@ -810,7 +1146,7 @@ function CreativeCanvas({
   return (
     <div
       style={{ width: previewWidth, height: previewHeight }}
-      className={frame ? 'overflow-hidden rounded border border-gray-200 bg-white shadow-sm' : 'overflow-hidden bg-white'}
+      className={frame ? 'overflow-hidden rounded-lg border border-[#e3dbea] bg-white shadow-sm' : 'overflow-hidden bg-white'}
     >
       <style>{globalStyles}</style>
       <div
@@ -862,8 +1198,8 @@ function CreativeCanvas({
             className={[
               'absolute m-0 block overflow-hidden border-0 bg-transparent p-0',
               editMode ? 'cursor-pointer' : 'pointer-events-none',
-              editMode && selectedBlockId === block.id ? 'outline outline-2 outline-blue-500' : '',
-              editMode && selectedBlockId !== block.id ? 'outline outline-1 outline-blue-300/60' : '',
+              editMode && selectedBlockId === block.id ? 'outline outline-2 outline-[#7c3aed]' : '',
+              editMode && selectedBlockId !== block.id ? 'outline outline-1 outline-[#a78bfa]/70' : '',
             ].join(' ')}
           >
             {getBlockSpans(block).map((span) => (
@@ -899,7 +1235,6 @@ function EditorPanel({
   onUpdateBlock,
   onUpdateSpan,
   onNudgeBlock,
-  onCenterRow,
   onDeleteBlock,
 }: {
   blocks: TextBlock[]
@@ -914,19 +1249,20 @@ function EditorPanel({
   onUpdateBlock: (patch: Partial<TextBlock>) => void
   onUpdateSpan: (patch: Partial<TextSpan>) => void
   onNudgeBlock: (dx: number, dy: number) => void
-  onCenterRow: () => void
   onDeleteBlock: () => void
 }) {
   const spans = selectedBlock ? getInlineSpans(selectedBlock) : []
+  const selectedBlockIndex = Math.max(0, blocks.findIndex((block) => block.id === selectedBlockId))
 
   return (
-    <aside className="flex flex-col gap-3 rounded border border-gray-200 p-4">
-      <label className="flex flex-col gap-1 text-xs text-gray-500">
-        Block
+    <aside className="h-fit rounded-2xl border border-[#e5ddec] bg-white shadow-[0_24px_80px_rgba(35,20,55,0.08)] lg:sticky lg:top-20">
+      <div className="border-b border-[#eee8f4] p-4">
+        <label className="flex flex-col gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a8294]">
+          Block
         <select
           value={selectedBlockId}
           onChange={(event) => onSelectBlock(event.target.value)}
-          className="rounded border border-gray-300 bg-white p-2 text-sm text-black"
+            className="h-10 rounded-lg border border-[#ddd4e8] bg-white px-3 text-sm font-medium normal-case tracking-normal text-[#17121f] outline-none transition focus:border-[#8b5cf6]"
         >
           {blocks.map((block) => (
             <option key={block.id} value={block.id}>
@@ -935,31 +1271,50 @@ function EditorPanel({
           ))}
         </select>
       </label>
+        <div className="mt-2 flex items-center gap-2 text-xs text-[#9a91a5]">
+          {selectedBlock && <span className="rounded bg-[#eee8f4] px-2 py-1 font-semibold uppercase text-[#6a6075]">{selectedBlock.role}</span>}
+          <span>Block {blocks.length ? selectedBlockIndex + 1 : 0} / {blocks.length}</span>
+        </div>
+        <button
+          type="button"
+          disabled={!editMode || !selectedBlock}
+          className="mt-3 w-full rounded-lg border border-[#ddd4e8] bg-white p-2 text-sm font-semibold text-[#5b21b6] transition hover:bg-[#f6f0ff] disabled:cursor-not-allowed disabled:opacity-40"
+          onClick={() => {
+            if (!selectedBlock) return
+            onUpdateBlock({
+              x: Math.round((canvasWidth - selectedBlock.width) / 2),
+              align: 'center',
+            })
+          }}
+        >
+          Center horizontally
+        </button>
+      </div>
 
       {!editMode && (
-        <p className="text-xs text-gray-400">Click Edit to adjust text and position.</p>
+        <p className="p-4 text-sm text-[#8a8294]">Click Edit to adjust text and position.</p>
       )}
 
       {editMode && selectedBlock && (
-        <>
-          <label className="flex flex-col gap-1 text-xs text-gray-500">
-            Text
+        <div className="max-h-[calc(100vh-10rem)] overflow-y-auto">
+          <EditorSection title="Text">
+            <label className="flex flex-col gap-2">
             <textarea
               value={selectedBlock.text}
               onChange={(event) => onUpdateBlock({ text: event.target.value })}
-              rows={4}
-              className="rounded border border-gray-300 p-2 text-sm text-black"
+                rows={5}
+                className="resize-y rounded-lg border border-[#ddd4e8] p-3 text-sm leading-6 text-[#17121f] outline-none transition focus:border-[#8b5cf6]"
             />
           </label>
 
           {spans.length > 0 && (
-          <div className="flex flex-col gap-3 rounded border border-gray-200 p-3">
-            <label className="flex flex-col gap-1 text-xs text-gray-500">
+              <div className="mt-4 rounded-xl border border-[#eee8f4] bg-[#fbf9fe] p-3">
+                <label className="flex flex-col gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a8294]">
               Inline span
               <select
                 value={selectedSpanIndex}
                 onChange={(event) => onSelectSpan(Number(event.target.value))}
-                className="rounded border border-gray-300 bg-white p-2 text-sm text-black"
+                    className="h-10 rounded-lg border border-[#ddd4e8] bg-white px-3 text-sm font-medium normal-case tracking-normal text-[#17121f] outline-none transition focus:border-[#8b5cf6]"
               >
                 {spans.map((span, index) => (
                   <option key={span.id} value={index}>
@@ -971,25 +1326,25 @@ function EditorPanel({
 
             {selectedSpan && (
               <>
-                <label className="flex flex-col gap-1 text-xs text-gray-500">
+                    <label className="mt-3 flex flex-col gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a8294]">
                   Span text
                   <input
                     value={selectedSpan.text}
                     onChange={(event) => onUpdateSpan({ text: event.target.value })}
-                    className="rounded border border-gray-300 p-2 text-sm text-black"
+                        className="h-10 rounded-lg border border-[#ddd4e8] bg-white px-3 text-sm font-medium normal-case tracking-normal text-[#17121f] outline-none transition focus:border-[#8b5cf6]"
                   />
                 </label>
 
-                <div className="grid grid-cols-2 gap-2">
+                    <div className="mt-3 grid grid-cols-2 gap-3">
                   <NumberField label="Span size" value={selectedSpan.fontSize} onChange={(fontSize) => onUpdateSpan({ fontSize })} />
                   <NumberField label="Span weight" value={selectedSpan.fontWeight} step={100} onChange={(fontWeight) => onUpdateSpan({ fontWeight })} />
                   <NumberField label="Span tracking" value={selectedSpan.letterSpacing} step={0.1} onChange={(letterSpacing) => onUpdateSpan({ letterSpacing })} />
-                  <label className="flex flex-col gap-1 text-xs text-gray-500">
+                      <label className="flex flex-col gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a8294]">
                     Span color
                     <input
                       value={selectedSpan.color}
                       onChange={(event) => onUpdateSpan({ color: event.target.value })}
-                      className="min-w-0 rounded border border-gray-300 p-2 text-sm text-black"
+                          className="h-10 min-w-0 rounded-lg border border-[#ddd4e8] bg-white px-3 text-sm font-medium normal-case tracking-normal text-[#17121f] outline-none transition focus:border-[#8b5cf6]"
                     />
                   </label>
                 </div>
@@ -997,75 +1352,81 @@ function EditorPanel({
             )}
           </div>
           )}
+          </EditorSection>
 
-          <div className="grid grid-cols-3 gap-2">
-            <button className="rounded border border-gray-300 p-2 text-sm" onClick={() => onNudgeBlock(0, -10)}>Up 10</button>
-            <button className="rounded border border-gray-300 p-2 text-sm" onClick={() => onNudgeBlock(0, -1)}>Up 1</button>
-            <button className="rounded border border-gray-300 p-2 text-sm" onClick={() => onNudgeBlock(0, 1)}>Down 1</button>
-            <button className="rounded border border-gray-300 p-2 text-sm" onClick={() => onNudgeBlock(-10, 0)}>Left 10</button>
-            <button className="rounded border border-gray-300 p-2 text-sm" onClick={() => onNudgeBlock(10, 0)}>Right 10</button>
-            <button className="rounded border border-gray-300 p-2 text-sm" onClick={() => onNudgeBlock(0, 10)}>Down 10</button>
+          <EditorSection title="Typography">
+            <div className="grid grid-cols-2 gap-3">
+              <NumberField label="Font size" value={selectedBlock.fontSize} onChange={(fontSize) => onUpdateBlock({ fontSize })} />
+              <NumberField label="Line height" value={selectedBlock.lineHeight} onChange={(lineHeight) => onUpdateBlock({ lineHeight })} />
+              <NumberField label="Weight" value={selectedBlock.fontWeight} step={100} onChange={(fontWeight) => onUpdateBlock({ fontWeight })} />
+              <NumberField label="Tracking" value={selectedBlock.letterSpacing} step={0.1} onChange={(letterSpacing) => onUpdateBlock({ letterSpacing })} />
+            </div>
+
+            <label className="mt-3 flex flex-col gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a8294]">
+              Color
+              <input
+                value={selectedBlock.color}
+                onChange={(event) => onUpdateBlock({ color: event.target.value })}
+                className="h-10 rounded-lg border border-[#ddd4e8] bg-white px-3 text-sm font-medium normal-case tracking-normal text-[#17121f] outline-none transition focus:border-[#8b5cf6]"
+              />
+            </label>
+
+            <label className="mt-3 flex flex-col gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a8294]">
+              Other styles
+              <textarea
+                value={selectedBlock.otherStyles ?? ''}
+                onChange={(event) => onUpdateBlock({ otherStyles: event.target.value })}
+                rows={3}
+                placeholder="e.g. text-shadow: 0 2px 4px rgba(0,0,0,.25);"
+                className="resize-y rounded-lg border border-[#ddd4e8] p-3 text-sm leading-5 text-[#17121f] outline-none transition placeholder:text-[#aaa2b4] focus:border-[#8b5cf6]"
+              />
+            </label>
+          </EditorSection>
+
+          <EditorSection title="Position & size">
+            <div className="grid grid-cols-2 gap-3">
+              <NumberField label="X" value={selectedBlock.x} onChange={(x) => onUpdateBlock({ x })} />
+              <NumberField label="Y" value={selectedBlock.y} onChange={(y) => onUpdateBlock({ y })} />
+              <NumberField label="Width" value={selectedBlock.width} onChange={(width) => onUpdateBlock({ width })} />
+              <NumberField label="Height" value={selectedBlock.height} onChange={(height) => onUpdateBlock({ height })} />
+            </div>
+          </EditorSection>
+
+          <EditorSection title="Nudge & align">
+            <div className="grid grid-cols-3 gap-2">
+              <button className="rounded-lg border border-[#ddd4e8] bg-white p-2 text-sm font-medium transition hover:bg-[#f6f0ff]" onClick={() => onNudgeBlock(0, -10)}>↑ 10</button>
+              <button className="rounded-lg border border-[#ddd4e8] bg-white p-2 text-sm font-medium transition hover:bg-[#f6f0ff]" onClick={() => onNudgeBlock(0, -1)}>↑ 1</button>
+              <button className="rounded-lg border border-[#ddd4e8] bg-white p-2 text-sm font-medium transition hover:bg-[#f6f0ff]" onClick={() => onNudgeBlock(0, 1)}>↓ 1</button>
+              <button className="rounded-lg border border-[#ddd4e8] bg-white p-2 text-sm font-medium transition hover:bg-[#f6f0ff]" onClick={() => onNudgeBlock(-10, 0)}>← 10</button>
+              <button className="rounded-lg border border-[#ddd4e8] bg-white p-2 text-sm font-medium transition hover:bg-[#f6f0ff]" onClick={() => onNudgeBlock(10, 0)}>→ 10</button>
+              <button className="rounded-lg border border-[#ddd4e8] bg-white p-2 text-sm font-medium transition hover:bg-[#f6f0ff]" onClick={() => onNudgeBlock(0, 10)}>↓ 10</button>
           </div>
 
-          <button
-            className="rounded border border-gray-300 p-2 text-sm"
-            onClick={() =>
-              onUpdateBlock({
-                x: Math.round((canvasWidth - selectedBlock.width) / 2),
-                align: 'center',
-              })
-            }
-          >
-            Center horizontally
-          </button>
+          </EditorSection>
 
+          <div className="p-4">
           <button
-            className="rounded border border-gray-300 p-2 text-sm"
-            onClick={onCenterRow}
-          >
-            Center row
-          </button>
-
-          <button
-            className="rounded border border-red-300 p-2 text-sm text-red-600"
+              className="w-full rounded-xl bg-[#ef4444] p-3 text-sm font-semibold text-white transition hover:bg-[#dc2626]"
             onClick={onDeleteBlock}
           >
             Delete block
           </button>
-
-          <div className="grid grid-cols-2 gap-2">
-            <NumberField label="X" value={selectedBlock.x} onChange={(x) => onUpdateBlock({ x })} />
-            <NumberField label="Y" value={selectedBlock.y} onChange={(y) => onUpdateBlock({ y })} />
-            <NumberField label="Width" value={selectedBlock.width} onChange={(width) => onUpdateBlock({ width })} />
-            <NumberField label="Height" value={selectedBlock.height} onChange={(height) => onUpdateBlock({ height })} />
-            <NumberField label="Font size" value={selectedBlock.fontSize} onChange={(fontSize) => onUpdateBlock({ fontSize })} />
-            <NumberField label="Line height" value={selectedBlock.lineHeight} onChange={(lineHeight) => onUpdateBlock({ lineHeight })} />
-            <NumberField label="Weight" value={selectedBlock.fontWeight} step={100} onChange={(fontWeight) => onUpdateBlock({ fontWeight })} />
-            <NumberField label="Tracking" value={selectedBlock.letterSpacing} step={0.1} onChange={(letterSpacing) => onUpdateBlock({ letterSpacing })} />
           </div>
-
-          <label className="flex flex-col gap-1 text-xs text-gray-500">
-            Color
-            <input
-              value={selectedBlock.color}
-              onChange={(event) => onUpdateBlock({ color: event.target.value })}
-              className="rounded border border-gray-300 p-2 text-sm text-black"
-            />
-          </label>
-
-          <label className="flex flex-col gap-1 text-xs text-gray-500">
-            Other styles
-            <textarea
-              value={selectedBlock.otherStyles ?? ''}
-              onChange={(event) => onUpdateBlock({ otherStyles: event.target.value })}
-              rows={3}
-              placeholder="text-shadow: 0 2px 4px rgba(0,0,0,.25);"
-              className="rounded border border-gray-300 p-2 text-sm text-black"
-            />
-          </label>
-        </>
+        </div>
       )}
     </aside>
+  )
+}
+
+function EditorSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="border-b border-[#eee8f4] p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#756c81]">{title}</h3>
+        <span className="text-[#aaa2b4]">⌄</span>
+      </div>
+      {children}
+    </section>
   )
 }
 
@@ -1080,16 +1441,40 @@ function NumberField({
   step?: number
   onChange: (value: number) => void
 }) {
+  function formatValue(nextValue: number) {
+    return Number.isInteger(nextValue) ? String(nextValue) : String(Number(nextValue.toFixed(2)))
+  }
+
+  function increment(delta: number) {
+    onChange(Number(formatValue(value + delta)))
+  }
+
   return (
-    <label className="flex flex-col gap-1 text-xs text-gray-500">
+    <label className="flex flex-col gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a8294]">
       {label}
-      <input
-        type="number"
-        value={value}
-        step={step}
-        onChange={(event) => onChange(Number(event.target.value))}
-        className="min-w-0 rounded border border-gray-300 p-2 text-sm text-black"
-      />
+      <div className="grid h-10 grid-cols-[30px_1fr_30px] overflow-hidden rounded-lg border border-[#ddd4e8] bg-white">
+        <button
+          type="button"
+          onClick={() => increment(-step)}
+          className="border-r border-[#eee8f4] text-sm font-semibold text-[#8a8294] transition hover:bg-[#f6f0ff]"
+        >
+          -
+        </button>
+        <input
+          type="number"
+          value={formatValue(value)}
+          step={step}
+          onChange={(event) => onChange(Number(event.target.value))}
+          className="min-w-0 border-0 bg-white px-2 text-center text-sm font-medium normal-case tracking-normal text-[#17121f] outline-none"
+        />
+        <button
+          type="button"
+          onClick={() => increment(step)}
+          className="border-l border-[#eee8f4] text-sm font-semibold text-[#8a8294] transition hover:bg-[#f6f0ff]"
+        >
+          +
+        </button>
+      </div>
     </label>
   )
 }
@@ -1151,6 +1536,38 @@ function getVariationKeys(result: CopyVariationsResult, backgroundId: string) {
 
 function getVariationKey(backgroundId: string, role: CopyRole, id: string) {
   return `${backgroundId}-${role}-${id}`
+}
+
+function getOriginalVariationKey(backgroundId: string) {
+  return `${backgroundId}-original`
+}
+
+function getExportItems(
+  backgrounds: BackgroundVariant[],
+  result: CopyVariationsResult | null,
+  baseLayout: LayoutResult,
+  canvasWidth: number,
+  canvasHeight: number,
+) {
+  return backgrounds.flatMap((background) => {
+    const originalItem = {
+      key: getOriginalVariationKey(background.id),
+      background,
+      layout: baseLayout,
+    }
+
+    const variationItems = result
+      ? result.variations.flatMap((group) =>
+          group.items.map((item) => ({
+            key: getVariationKey(background.id, group.role, item.id),
+            background,
+            layout: item.layout ?? applyVariationPatches(baseLayout, item, canvasWidth, canvasHeight),
+          })),
+        )
+      : []
+
+    return [originalItem, ...variationItems]
+  })
 }
 
 function safeFilename(value: string) {
@@ -1351,25 +1768,6 @@ function parseStyleDeclarations(value: string): React.CSSProperties {
 
     return { ...styles, [camelProperty]: propertyValue }
   }, {})
-}
-
-function getRowBlocks(blocks: TextBlock[], selectedBlock: TextBlock) {
-  const selectedCenterY = selectedBlock.y + selectedBlock.height / 2
-  const selectedTop = selectedBlock.y
-  const selectedBottom = selectedBlock.y + selectedBlock.height
-
-  return blocks.filter((block) => {
-    const blockCenterY = block.y + block.height / 2
-    const blockTop = block.y
-    const blockBottom = block.y + block.height
-    const verticalOverlap = Math.min(selectedBottom, blockBottom) - Math.max(selectedTop, blockTop)
-    const minHeight = Math.max(1, Math.min(selectedBlock.height, block.height))
-
-    return (
-      Math.abs(blockCenterY - selectedCenterY) <= Math.max(6, minHeight * 0.65) ||
-      verticalOverlap / minHeight >= 0.45
-    )
-  })
 }
 
 function getImageDimensions(file: File): Promise<{ width: number; height: number }> {

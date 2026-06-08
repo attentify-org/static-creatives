@@ -77,11 +77,23 @@ export async function POST(request: NextRequest) {
 function buildPrompt(mode: BackgroundMode, width: number, height: number) {
   const modeInstruction = {
     light:
-      "LIGHT variation: keep the background almost identical. Change only subtle texture, lighting, color nuance, and small decorative details.",
+      `LIGHT variation:
+- Keep the same background concept, composition, decorative language, and overall mood.
+- Make only small visible changes: subtle texture, lighting, color nuance, tiny decorative details, minor pattern variation.
+- The result should feel like a close sibling of the original clean background, not a new design.`,
     medium:
-      "MEDIUM variation: keep the same composition and text-safe areas, but change the visual styling, background details, materials, lighting, or decorative motifs.",
+      `MEDIUM variation:
+- Keep the same broad concept and advertising category, but make a clearly new visual version inside that concept.
+- You may significantly change colors, decorative shapes, pattern style, materials, lighting, borders, ornaments, depth, and background details.
+- The result should be recognizably related to the original idea, but visibly different at first glance.
+- Preserve the same text-safe zones and general readability structure.`,
     strong:
-      "STRONG variation: create a noticeably different visual angle while preserving the exact canvas size, composition balance, text-safe areas, and readability zones.",
+      `STRONG variation:
+- Create a new background idea, not just a stronger version of the same background.
+- You may change the visual concept, style direction, decorative system, color palette, shapes, environment, texture, lighting, depth, frame treatment, and overall art direction.
+- It can be radically different from the original clean background, as long as it is still suitable for the same ad and the same editable text layout.
+- The text-safe zones are non-negotiable: keep the areas where text appears clean, calm, and readable.
+- Do not let the new background compete with or visually cover the text areas.`,
   }[mode];
 
   return `You are generating a text-free background variant for an advertising creative.
@@ -96,11 +108,14 @@ Hard requirements:
 - Do not add any text, letters, numbers, labels, CTA text, logos made from typography, or typography-like marks.
 - Preserve safe readable areas where text appears in the source creative.
 - Keep the main text zones visually calm: avoid busy detail, high contrast clutter, faces, hands, objects, or patterns behind text areas.
-- Preserve the overall aspect ratio, crop, border/frame logic, and major composition zones.
+- Preserve the overall aspect ratio and crop.
+- Preserve the usable layout structure for the existing HTML text overlay.
 - Keep the image suitable for overlaying the existing editable HTML text layout.
 - Do not move important decorative elements into text areas.
 - Do not create fake UI buttons or fake captions.
-- Reliability is more important than novelty.`;
+- For LIGHT mode, reliability and similarity are more important than novelty.
+- For MEDIUM mode, visible variation is important, but the same broad concept should remain.
+- For STRONG mode, novelty is important: avoid returning a near-duplicate of the original background, while still protecting text-safe areas.`;
 }
 
 async function readGeneratedImage(imagePath: string) {
