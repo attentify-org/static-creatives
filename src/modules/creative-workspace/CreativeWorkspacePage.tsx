@@ -29,6 +29,7 @@ import {
   getVariationKey,
   getVariationKeys,
   materializeCopyVariations,
+  mergeCopyVariationResults,
 } from './utils/layout'
 import { WATERMARK_TEXT } from './utils/watermark'
 
@@ -237,7 +238,6 @@ export function CreativeWorkspacePage() {
     setBaseCreativeLayout(layoutForVariations)
     setCopyStatus('loading')
     setCopyError('')
-    setCopyResult(null)
 
     try {
       const res = await fetch('/api/generate-copy-variations', {
@@ -253,8 +253,19 @@ export function CreativeWorkspacePage() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'Something went wrong')
       const materializedResult = materializeCopyVariations(data, layoutForVariations, step1Result?.width, step1Result?.height)
-      setCopyResult(materializedResult)
-      setSelectedDownloadKeys(new Set([getOriginalVariationKey('original'), ...getVariationKeys(materializedResult, 'original')]))
+      const mergedResult = mergeCopyVariationResults(copyResult, materializedResult)
+      setCopyResult(mergedResult)
+      setSelectedDownloadKeys((current) => {
+        const next = new Set(current)
+        backgrounds.forEach((background) => {
+          next.add(getOriginalVariationKey(background.id))
+          const existingKeys = copyResult ? new Set(getVariationKeys(copyResult, background.id)) : new Set<string>()
+          getVariationKeys(mergedResult, background.id).forEach((key) => {
+            if (!existingKeys.has(key)) next.add(key)
+          })
+        })
+        return next
+      })
       setSelectedVariationKey(null)
       setCopyStatus('done')
       setVariationModalOpen(null)

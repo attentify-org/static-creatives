@@ -51,6 +51,48 @@ export function materializeCopyVariations(
   }
 }
 
+export function mergeCopyVariationResults(
+  current: CopyVariationsResult | null,
+  incoming: CopyVariationsResult,
+): CopyVariationsResult {
+  if (!current) return incoming
+
+  const incomingRoles = new Set(incoming.variations.map((group) => group.role))
+  const mergedExistingGroups = current.variations.map((currentGroup) => {
+    const incomingGroup = incoming.variations.find((group) => group.role === currentGroup.role)
+    if (!incomingGroup) return currentGroup
+
+    const nextStartIndex = currentGroup.items.length + 1
+    const incomingItems = incomingGroup.items.map((item, index) => ({
+      ...item,
+      id: `${currentGroup.role}-${nextStartIndex + index}`,
+    }))
+
+    return {
+      ...currentGroup,
+      reason: currentGroup.reason || incomingGroup.reason,
+      items: [...currentGroup.items, ...incomingItems],
+    }
+  })
+
+  const newGroups = incoming.variations
+    .filter((group) => !current.variations.some((currentGroup) => currentGroup.role === group.role))
+    .map((group) => ({
+      ...group,
+      items: group.items.map((item, index) => ({
+        ...item,
+        id: `${group.role}-${index + 1}`,
+      })),
+    }))
+
+  return {
+    variations: [
+      ...mergedExistingGroups,
+      ...newGroups.filter((group) => incomingRoles.has(group.role)),
+    ],
+  }
+}
+
 export function getVariationKeys(result: CopyVariationsResult, backgroundId: string) {
   return result.variations.flatMap((group) =>
     group.items.map((item) => getVariationKey(backgroundId, group.role, item.id)),

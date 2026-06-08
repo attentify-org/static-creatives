@@ -20,6 +20,13 @@ import {
 import { downloadBlob, downloadDataUrl, safeFilename } from '../utils/dom-export'
 import { CreativeCanvas } from './CreativeCanvas'
 
+const PNG_EXPORT_OPTIONS = {
+  cacheBust: true,
+  pixelRatio: 1,
+  backgroundColor: '#ffffff',
+  skipFonts: true,
+} as const
+
 export function CopyVariationsPanel({
   backgrounds,
   canvasWidth,
@@ -71,7 +78,7 @@ export function CopyVariationsPanel({
         const [{ key }] = selectedItems
         const node = exportNodeRefs.current[key]
         if (!node) throw new Error('Selected variation is not ready for export')
-        const dataUrl = await toPng(node, { cacheBust: true, pixelRatio: 1, backgroundColor: '#ffffff' })
+        const dataUrl = await toPng(node, PNG_EXPORT_OPTIONS)
         downloadDataUrl(dataUrl, `${safeFilename(key)}.png`)
         setDownloadStatus('idle')
         return
@@ -82,7 +89,7 @@ export function CopyVariationsPanel({
       for (const { key } of selectedItems) {
         const node = exportNodeRefs.current[key]
         if (!node) continue
-        const dataUrl = await toPng(node, { cacheBust: true, pixelRatio: 1, backgroundColor: '#ffffff' })
+        const dataUrl = await toPng(node, PNG_EXPORT_OPTIONS)
         zip.file(`${safeFilename(key)}.png`, dataUrl.split(',')[1], { base64: true })
       }
 
