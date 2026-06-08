@@ -61,26 +61,48 @@ node_modules/next/dist/docs/
 ├── postcss.config.mjs
 ├── tsconfig.json
 └── src
-    └── app
-        ├── api
-        │   ├── extract-layout
-        │   │   └── route.ts
-        │   ├── generate-background-variant
-        │   │   └── route.ts
-        │   ├── generate-copy-variations
-        │   │   └── route.ts
-        │   ├── generate-variations
-        │   │   └── route.ts
-        │   └── remove-text
-        │       └── route.ts
-        ├── globals.css
-        ├── layout.tsx
-        └── page.tsx
+    ├── app
+    │   ├── api
+    │   │   ├── extract-layout
+    │   │   │   └── route.ts
+    │   │   ├── generate-background-variant
+    │   │   │   └── route.ts
+    │   │   ├── generate-copy-variations
+    │   │   │   └── route.ts
+    │   │   ├── generate-variations
+    │   │   │   └── route.ts
+    │   │   └── remove-text
+    │   │       └── route.ts
+    │   ├── globals.css
+    │   ├── layout.tsx
+    │   └── page.tsx
+    └── modules
+        └── creative-workspace
+            ├── CreativeWorkspacePage.tsx
+            ├── components
+            │   ├── AnalyzeCreativeLoader.tsx
+            │   ├── CopyVariationsPanel.tsx
+            │   ├── CreativeCanvas.tsx
+            │   ├── EditorPanel.tsx
+            │   ├── NumberField.tsx
+            │   ├── UploadCreativePanel.tsx
+            │   └── VariationSettingsModal.tsx
+            ├── types.ts
+            └── utils
+                ├── api.ts
+                ├── dom-export.ts
+                ├── image.ts
+                ├── layout.ts
+                └── render.ts
 ```
 
 Главные файлы:
 
-- `src/app/page.tsx` - основной client UI, editor, preview cards, export, state management.
+- `src/app/page.tsx` - тонкий route entrypoint, экспортирует workspace page.
+- `src/modules/creative-workspace/CreativeWorkspacePage.tsx` - основной client container, state management и пользовательский флоу.
+- `src/modules/creative-workspace/components/*` - UI-компоненты editor/canvas/modals/cards/export panel.
+- `src/modules/creative-workspace/utils/*` - shared helpers для layout patches, fit, image sizing, DOM export и style parsing.
+- `src/modules/creative-workspace/types.ts` - frontend data contracts.
 - `src/app/api/remove-text/route.ts` - удаление текста с картинки и сохранение чистого фона.
 - `src/app/api/extract-layout/route.ts` - извлечение текстового layout из оригинального креатива.
 - `src/app/api/generate-copy-variations/route.ts` - генерация текстовых патчей для hook/CTA/body.
@@ -186,6 +208,8 @@ AI не имеет права менять координаты, размеры,
 - `medium`;
 - `strong`.
 
+Пользователь также может добавить свободный prompt/instruction для background generation. Он используется как дополнительное visual direction, но не может отменять запрет на текст, точный canvas size и сохранение text-safe areas.
+
 Запрос:
 
 ```txt
@@ -208,6 +232,8 @@ Background variant 2
 ```
 
 В каждой секции показываются те же copy variations, но на другом фоне.
+
+Неудачную generated copy variation можно удалить через карточку вариации. Удаление применяется к самой copy variation, поэтому карточка исчезает из всех background sections, а ее export keys убираются из выбранных скачиваний. Original creative удалить нельзя.
 
 ### 4.6 Export PNG
 
@@ -573,6 +599,7 @@ FormData:
 - width: canvas width
 - height: canvas height
 - mode: "light" | "medium" | "strong"
+- userPrompt: optional additional visual direction
 ```
 
 Output:
@@ -592,6 +619,7 @@ Prompt rules:
 - сохранять text-safe areas;
 - держать зоны текста спокойными и читаемыми;
 - вернуть ровно тот же canvas size;
+- `userPrompt` учитывать только если он совместим с selected mode, exact canvas size, text-safe zones и no-text requirements;
 - reliability важнее novelty.
 
 ### 6.5 POST /api/generate-variations
@@ -606,15 +634,21 @@ src/app/api/generate-variations/route.ts
 
 ## 7. Frontend: важные компоненты и helpers
 
-Основной файл:
+Основной route entrypoint:
 
 ```txt
 src/app/page.tsx
 ```
 
+Он только экспортирует workspace module. Основной client container:
+
+```txt
+src/modules/creative-workspace/CreativeWorkspacePage.tsx
+```
+
 Ключевые части:
 
-- `Home` - владеет всем state и основным флоу.
+- `CreativeWorkspacePage` - владеет всем state и основным флоу.
 - `CreativeCanvas` - рендерит фон + absolute positioned text blocks.
 - `EditorPanel` - панель редактирования блоков и spans.
 - `CopyVariationsPanel` - controls вариаций, background generation, карточки, export.
