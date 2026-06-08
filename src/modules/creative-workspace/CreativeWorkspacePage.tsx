@@ -30,6 +30,7 @@ import {
   getVariationKeys,
   materializeCopyVariations,
 } from './utils/layout'
+import { WATERMARK_TEXT } from './utils/watermark'
 
 export function CreativeWorkspacePage() {
   const [activeTab, setActiveTab] = useState<'upload' | 'workspace'>('upload')
@@ -190,6 +191,42 @@ export function CreativeWorkspacePage() {
 
       return { ...current, blocks }
     })
+  }
+
+  function addWatermarkBlock() {
+    if (!layoutResult || !step1Result) return
+
+    const fontSize = Math.max(24, Math.round(step1Result.width * 0.045))
+    const width = Math.min(Math.round(step1Result.width * 0.42), Math.max(220, fontSize * 5.8))
+    const height = Math.max(Math.round(fontSize * 1.25), 42)
+    const block: TextBlock = {
+      id: `watermark-${Date.now()}`,
+      role: 'logo',
+      text: WATERMARK_TEXT,
+      spans: null,
+      x: Math.round((step1Result.width - width) / 2),
+      y: Math.round((step1Result.height - height) / 2),
+      width,
+      height,
+      fontFamily: 'Arial, Helvetica, sans-serif',
+      fontSize,
+      lineHeight: height,
+      fontWeight: 700,
+      letterSpacing: 0,
+      color: '#ffffff',
+      align: 'center',
+      textTransform: 'none',
+      zIndex: Math.max(1, ...layoutResult.blocks.map((item) => item.zIndex + 1)),
+      otherStyles: 'opacity: 0.5;',
+    }
+
+    setLayoutResult({
+      ...layoutResult,
+      blocks: [...layoutResult.blocks, block],
+    })
+    setSelectedBlockId(block.id)
+    setSelectedSpanIndex(0)
+    setEditMode(true)
   }
 
   async function handleGenerateCopyVariations() {
@@ -527,6 +564,7 @@ export function CreativeWorkspacePage() {
               onUpdateBlock={updateSelectedBlock}
               onUpdateSpan={updateSelectedSpan}
               onNudgeBlock={nudgeSelectedBlock}
+              onAddWatermark={addWatermarkBlock}
               onDeleteBlock={deleteSelectedBlock}
             />
           </div>

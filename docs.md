@@ -81,6 +81,7 @@ node_modules/next/dist/docs/
             ├── CreativeWorkspacePage.tsx
             ├── components
             │   ├── AnalyzeCreativeLoader.tsx
+            │   ├── AttainifyWatermark.tsx
             │   ├── CopyVariationsPanel.tsx
             │   ├── CreativeCanvas.tsx
             │   ├── EditorPanel.tsx
@@ -93,7 +94,8 @@ node_modules/next/dist/docs/
                 ├── dom-export.ts
                 ├── image.ts
                 ├── layout.ts
-                └── render.ts
+                ├── render.ts
+                └── watermark.ts
 ```
 
 Главные файлы:
@@ -133,6 +135,7 @@ POST /api/extract-layout
 В редакторе можно:
 
 - выбрать блок;
+- добавить watermark Attainify;
 - изменить текст;
 - изменить inline span, если он есть;
 - двигать блок вверх/вниз/влево/вправо;
@@ -142,6 +145,8 @@ POST /api/extract-layout
 - менять `fontSize`, `lineHeight`, `fontWeight`, `letterSpacing`, `color`;
 - менять `otherStyles`;
 - удалить блок.
+
+Watermark рендерится через обычный layout block. Если block имеет `role: "logo"` или его текст нормализуется в `Attainify`, frontend вместо обычного текста рендерит `AttainifyWatermark`: inline SVG logo + название. SVG наследует `currentColor`, поэтому цвет берется из `TextBlock.color`; размер логотипа пропорционален `fontSize`. Позиция, width/height, fontWeight, zIndex и `otherStyles` остаются от исходного блока. Если AI извлек только текст `Attainify`, renderer автоматически подменит его на watermark. Если такого блока нет, пользователь может добавить watermark кнопкой `Add watermark` в editor panel.
 
 `Done Editing` фиксирует изменения. Если редактируется конкретная variation card, обновляется только она, а не все вариации сразу.
 

@@ -16,6 +16,7 @@ export function EditorPanel({
   onUpdateBlock,
   onUpdateSpan,
   onNudgeBlock,
+  onAddWatermark,
   onDeleteBlock,
 }: {
   blocks: TextBlock[]
@@ -30,6 +31,7 @@ export function EditorPanel({
   onUpdateBlock: (patch: Partial<TextBlock>) => void
   onUpdateSpan: (patch: Partial<TextSpan>) => void
   onNudgeBlock: (dx: number, dy: number) => void
+  onAddWatermark: () => void
   onDeleteBlock: () => void
 }) {
   const spans = selectedBlock ? getInlineSpans(selectedBlock) : []
@@ -69,6 +71,14 @@ export function EditorPanel({
           }}
         >
           Center horizontally
+        </button>
+        <button
+          type="button"
+          disabled={!editMode}
+          className="mt-2 w-full rounded-lg border border-[#cfc2df] bg-white p-2 text-sm font-semibold text-[#5b21b6] transition hover:bg-[#f6f0ff] disabled:cursor-not-allowed disabled:opacity-40"
+          onClick={onAddWatermark}
+        >
+          Add watermark
         </button>
       </div>
 

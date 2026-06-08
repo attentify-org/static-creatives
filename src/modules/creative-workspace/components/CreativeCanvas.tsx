@@ -1,5 +1,7 @@
 import type { TextBlock } from '../types'
 import { getBlockSpans, parseStyleDeclarations } from '../utils/render'
+import { isWatermarkBlock } from '../utils/watermark'
+import { AttainifyWatermark } from './AttainifyWatermark'
 
 const PREVIEW_MAX_WIDTH = 430
 
@@ -89,19 +91,23 @@ export function CreativeCanvas({
               editMode && selectedBlockId !== block.id ? 'outline outline-1 outline-[#a78bfa]/70' : '',
             ].join(' ')}
           >
-            {getBlockSpans(block).map((span) => (
-              <span
-                key={span.id}
-                style={{
-                  fontSize: span.fontSize,
-                  fontWeight: span.fontWeight,
-                  letterSpacing: span.letterSpacing,
-                  color: span.color,
-                }}
-              >
-                {span.text}
-              </span>
-            ))}
+            {isWatermarkBlock(block) ? (
+              <AttainifyWatermark block={block} />
+            ) : (
+              getBlockSpans(block).map((span) => (
+                <span
+                  key={span.id}
+                  style={{
+                    fontSize: span.fontSize,
+                    fontWeight: span.fontWeight,
+                    letterSpacing: span.letterSpacing,
+                    color: span.color,
+                  }}
+                >
+                  {span.text}
+                </span>
+              ))
+            )}
           </div>
         ))}
       </div>
