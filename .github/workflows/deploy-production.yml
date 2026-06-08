@@ -1,0 +1,92 @@
+name: Deploy Static Creatives to Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ENVIRONMENT: prod
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'creatives-app-prod' }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER || 'creatives-app-prod' }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE || 'creatives-app-prod' }}
+  ECS_TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY || 'creatives-app-prod' }}
+  CONTAINER_NAME: ${{ vars.CONTAINER_NAME || 'creatives-app-prod' }}
+
+jobs:
+  deploy:
+    name: Build and Deploy to Production
+    environment:
+      name: production
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Debug - Check secrets and context
+        run: |
+          echo "Repository: ${{ github.repository }}"
+          echo "Environment: production"
+          echo "Role ARN exists: ${{ secrets.AWS_ROLE_ARN_PROD != '' }}"
+          if [ -z "${{ secrets.AWS_ROLE_ARN_PROD }}" ]; then
+            echo "ERROR: AWS_ROLE_ARN_PROD secret is empty!"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            --build-arg ENVIRONMENT=${{ env.ENVIRONMENT }} \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.ECS_TASK_FAMILY }} \
+            --query taskDefinition > task-def.json
+
+      - name: Render task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: false
+
+      - name: Deployment notification
+        run: |
+          echo "Successfully deployed to Production"
+          echo "Image: ${{ steps.build-image.outputs.image }}"

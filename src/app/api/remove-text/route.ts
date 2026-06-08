@@ -1,11 +1,10 @@
 import { NextRequest } from "next/server";
-import OpenAI, { toFile } from "openai";
+import { toFile } from "openai";
 import { writeFile, mkdir } from "fs/promises";
 import { join } from "path";
+import { createOpenAIClient, openAIConfigurationError } from "@/lib/openai";
 
 export const maxDuration = 60;
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function POST(request: NextRequest) {
   const formData = await request.formData();
@@ -20,6 +19,9 @@ export async function POST(request: NextRequest) {
   const bytes = await file.arrayBuffer();
   const mimeType = file.type || "image/png";
   const { size, outputWidth, outputHeight } = getImageEditSize(width, height);
+
+  const openai = createOpenAIClient();
+  if (!openai) return openAIConfigurationError();
 
   // Send original image directly to edit endpoint — model sees actual pixels
   const imageFile = await toFile(

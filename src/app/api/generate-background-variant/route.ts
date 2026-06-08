@@ -1,11 +1,10 @@
 import { NextRequest } from "next/server";
-import OpenAI, { toFile } from "openai";
+import { toFile } from "openai";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join, normalize } from "path";
+import { createOpenAIClient, openAIConfigurationError } from "@/lib/openai";
 
 export const maxDuration = 120;
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 type BackgroundMode = "light" | "medium" | "strong";
 
@@ -28,6 +27,9 @@ export async function POST(request: NextRequest) {
   if (!width || !height) {
     return Response.json({ error: "Invalid canvas size" }, { status: 400 });
   }
+
+  const openai = createOpenAIClient();
+  if (!openai) return openAIConfigurationError();
 
   const sourceBytes = await sourceFile.arrayBuffer();
   const sourceMimeType = sourceFile.type || "image/png";
