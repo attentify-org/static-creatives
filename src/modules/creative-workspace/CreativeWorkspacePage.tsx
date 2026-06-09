@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { CopyVariationsPanel } from './components/CopyVariationsPanel'
 import { CreativeCanvas } from './components/CreativeCanvas'
 import { EditorPanel } from './components/EditorPanel'
+import { CreateTextLayerModal } from './components/CreateTextLayerModal'
 import { UploadCreativePanel } from './components/UploadCreativePanel'
 import { VariationSettingsModal } from './components/VariationSettingsModal'
 import type {
@@ -11,12 +12,12 @@ import type {
   BackgroundVariant,
   CopyRole,
   CopyVariation,
-  CopyVariationsResult,
   HookVariationMode,
   LayoutResult,
-  SelectedVariationKey,
   Step1Result,
   TextBlock,
+  TextLayer,
+  TextLayerSource,
   TextSpan,
 } from './types'
 import { postForm } from './utils/api'
@@ -37,6 +38,7 @@ export function CreativeWorkspacePage() {
   const [activeTab, setActiveTab] = useState<'upload' | 'workspace'>('upload')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [variationModalOpen, setVariationModalOpen] = useState<'text' | 'visual' | null>(null)
+  const [textLayerModalOpen, setTextLayerModalOpen] = useState(false)
   const [step1Status, setStep1Status] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [step1Result, setStep1Result] = useState<Step1Result | null>(null)
   const [step1Error, setStep1Error] = useState('')
@@ -51,17 +53,22 @@ export function CreativeWorkspacePage() {
   const [hookVariationMode, setHookVariationMode] = useState<HookVariationMode>('medium')
   const [copyPrompt, setCopyPrompt] = useState('')
   const [copyStatus, setCopyStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
-  const [copyResult, setCopyResult] = useState<CopyVariationsResult | null>(null)
-  const [baseCreativeLayout, setBaseCreativeLayout] = useState<LayoutResult | null>(null)
   const [copyError, setCopyError] = useState('')
-  const [selectedVariationKey, setSelectedVariationKey] = useState<SelectedVariationKey>(null)
-  const [selectedDownloadKeys, setSelectedDownloadKeys] = useState<Set<string>>(new Set())
+  const [textLayerStatus, setTextLayerStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [textLayerError, setTextLayerError] = useState('')
+  const [textLayers, setTextLayers] = useState<TextLayer[]>([])
+  const [activeTextLayerId, setActiveTextLayerId] = useState('')
   const [backgroundMode, setBackgroundMode] = useState<Exclude<BackgroundMode, 'original'>>('medium')
   const [backgroundPrompt, setBackgroundPrompt] = useState('')
   const [backgroundStatus, setBackgroundStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [backgroundError, setBackgroundError] = useState('')
-  const [backgroundVariants, setBackgroundVariants] = useState<BackgroundVariant[]>([])
   const [editorBackgroundId, setEditorBackgroundId] = useState('original')
+
+  const activeTextLayer = textLayers.find((layer) => layer.id === activeTextLayerId) ?? null
+  const activeBaseLayout = activeTextLayer?.baseLayout ?? layoutResult
+  const activeCopyResult = activeTextLayer?.copyResult ?? null
+  const selectedVariationKey = activeTextLayer?.selectedVariationKey ?? null
+  const selectedDownloadKeys = activeTextLayer?.selectedDownloadKeys ?? new Set<string>()
 
   async function handleBuildCreative() {
     const file = selectedFile
@@ -78,15 +85,16 @@ export function CreativeWorkspacePage() {
     setSelectedBlockId('')
     setSelectedSpanIndex(0)
     setCopyStatus('idle')
-    setCopyResult(null)
     setCopyPrompt('')
-    setBaseCreativeLayout(null)
-    setSelectedVariationKey(null)
-    setSelectedDownloadKeys(new Set())
+    setCopyError('')
+    setTextLayerStatus('idle')
+    setTextLayerError('')
+    setTextLayers([])
+    setActiveTextLayerId('')
+    setTextLayerModalOpen(false)
     setBackgroundPrompt('')
     setBackgroundStatus('idle')
     setBackgroundError('')
-    setBackgroundVariants([])
     setEditorBackgroundId('original')
 
     const sourceSize = await getImageDimensions(file)
@@ -108,14 +116,25 @@ export function CreativeWorkspacePage() {
         postForm<LayoutResult>('/api/extract-layout', extractLayoutFormData),
       ])
 
+      const originalLayer: TextLayer = {
+        id: 'original',
+        name: 'Original copy',
+        source: 'original',
+        baseLayout: cloneLayout(layoutData),
+        copyResult: null,
+        backgroundVariants: [],
+        selectedVariationKey: null,
+        selectedDownloadKeys: new Set([getOriginalVariationKey('original')]),
+      }
+
       setStep1Result(removeTextResult)
       setLayoutResult(layoutData)
-      setBaseCreativeLayout(cloneLayout(layoutData))
+      setTextLayers([originalLayer])
+      setActiveTextLayerId(originalLayer.id)
       setSelectedBlockId(layoutData.blocks?.[0]?.id ?? '')
       setSelectedSpanIndex(0)
       setStep1Status('done')
       setLayoutStatus('done')
-      setSelectedDownloadKeys(new Set([getOriginalVariationKey('original')]))
       setActiveTab('workspace')
       setEditMode(true)
     } catch (err) {
@@ -125,6 +144,49 @@ export function CreativeWorkspacePage() {
       setStep1Status('error')
       setLayoutStatus('error')
     }
+  }
+
+  function updateTextLayer(layerId: string, updater: (layer: TextLayer) => TextLayer) {
+    setTextLayers((current) => current.map((layer) => (
+      layer.id === layerId ? updater(layer) : layer
+    )))
+  }
+
+  function updateActiveTextLayer(updater: (layer: TextLayer) => TextLayer) {
+    if (!activeTextLayerId) return
+    updateTextLayer(activeTextLayerId, updater)
+  }
+
+  function getTextLayerEditorLayout(layer: TextLayer): LayoutResult {
+    const variationKey = layer.selectedVariationKey
+    if (!variationKey) return cloneLayout(layer.baseLayout)
+
+    const group = layer.copyResult?.variations.find((item) => item.role === variationKey.role)
+    const variation = group?.items.find((item) => item.id === variationKey.id)
+    if (!variation) return cloneLayout(layer.baseLayout)
+
+    return cloneLayout(variation.layout ?? applyVariationPatches(
+      layer.baseLayout,
+      variation,
+      step1Result?.width,
+      step1Result?.height,
+    ))
+  }
+
+  function selectTextLayer(layerId: string) {
+    if (layerId === activeTextLayerId) return
+    const nextLayer = textLayers.find((layer) => layer.id === layerId)
+    if (!nextLayer) return
+
+    commitCurrentEditorEdits()
+
+    const nextLayout = getTextLayerEditorLayout(nextLayer)
+    setActiveTextLayerId(nextLayer.id)
+    setLayoutResult(nextLayout)
+    setSelectedBlockId(nextLayout.blocks[0]?.id ?? '')
+    setSelectedSpanIndex(0)
+    setEditorBackgroundId(nextLayer.selectedVariationKey?.backgroundId ?? 'original')
+    setEditMode(true)
   }
 
   function updateSelectedBlock(patch: Partial<TextBlock>) {
@@ -231,11 +293,11 @@ export function CreativeWorkspacePage() {
   }
 
   async function handleGenerateCopyVariations() {
-    if (!layoutResult) return
+    if (!layoutResult || !activeTextLayer) return
     const layoutForVariations = cloneLayout(layoutResult)
+    const sourceVariationKey = selectedVariationKey
 
     commitCurrentEditorEdits()
-    setBaseCreativeLayout(layoutForVariations)
     setCopyStatus('loading')
     setCopyError('')
 
@@ -253,20 +315,27 @@ export function CreativeWorkspacePage() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'Something went wrong')
       const materializedResult = materializeCopyVariations(data, layoutForVariations, step1Result?.width, step1Result?.height)
-      const mergedResult = mergeCopyVariationResults(copyResult, materializedResult)
-      setCopyResult(mergedResult)
-      setSelectedDownloadKeys((current) => {
-        const next = new Set(current)
+      updateActiveTextLayer((layer) => {
+        const mergedResult = mergeCopyVariationResults(layer.copyResult, materializedResult)
+        const nextDownloadKeys = new Set(layer.selectedDownloadKeys)
         backgrounds.forEach((background) => {
-          next.add(getOriginalVariationKey(background.id))
-          const existingKeys = copyResult ? new Set(getVariationKeys(copyResult, background.id)) : new Set<string>()
+          nextDownloadKeys.add(getOriginalVariationKey(background.id))
+          const existingKeys = layer.copyResult ? new Set(getVariationKeys(layer.copyResult, background.id)) : new Set<string>()
           getVariationKeys(mergedResult, background.id).forEach((key) => {
-            if (!existingKeys.has(key)) next.add(key)
+            if (!existingKeys.has(key)) nextDownloadKeys.add(key)
           })
         })
-        return next
+        return {
+          ...layer,
+          baseLayout: sourceVariationKey ? layer.baseLayout : layoutForVariations,
+          copyResult: mergedResult,
+          selectedVariationKey: sourceVariationKey,
+          selectedDownloadKeys: nextDownloadKeys,
+        }
       })
-      setSelectedVariationKey(null)
+      setLayoutResult(layoutForVariations)
+      setSelectedBlockId(layoutForVariations.blocks[0]?.id ?? '')
+      setSelectedSpanIndex(0)
       setCopyStatus('done')
       setVariationModalOpen(null)
     } catch (err) {
@@ -277,30 +346,34 @@ export function CreativeWorkspacePage() {
 
   async function handleGenerateBackgroundVariant() {
     const file = selectedFile
-    if (!file || !step1Result) return
+    if (!file || !step1Result || !activeTextLayer || !layoutResult || !editorBackground) return
 
     setBackgroundStatus('loading')
     setBackgroundError('')
 
     const formData = new FormData()
     formData.append('sourceImage', file)
-    formData.append('cleanImagePath', step1Result.imagePath)
+    formData.append('cleanImagePath', editorBackground.imagePath)
     formData.append('width', String(step1Result.width))
     formData.append('height', String(step1Result.height))
     formData.append('mode', backgroundMode)
     formData.append('userPrompt', backgroundPrompt)
+    formData.append('templateLayout', JSON.stringify(layoutResult))
 
     try {
       const data = await postForm<BackgroundVariant>('/api/generate-background-variant', formData)
       const numberedBackground = {
         ...data,
-        label: `Background variant ${backgroundVariants.length + 1} (${backgroundMode})`,
+        label: `Background variant ${activeTextLayer.backgroundVariants.length + 1} (${backgroundMode})`,
       }
-      setBackgroundVariants((current) => [...current, numberedBackground])
-      setSelectedDownloadKeys((current) => {
+      updateActiveTextLayer((layer) => {
         const nextKeys = [getOriginalVariationKey(numberedBackground.id)]
-        if (copyResult) nextKeys.push(...getVariationKeys(copyResult, numberedBackground.id))
-        return new Set([...current, ...nextKeys])
+        if (layer.copyResult) nextKeys.push(...getVariationKeys(layer.copyResult, numberedBackground.id))
+        return {
+          ...layer,
+          backgroundVariants: [...layer.backgroundVariants, numberedBackground],
+          selectedDownloadKeys: new Set([...layer.selectedDownloadKeys, ...nextKeys]),
+        }
       })
       setBackgroundStatus('done')
       setVariationModalOpen(null)
@@ -311,12 +384,13 @@ export function CreativeWorkspacePage() {
   }
 
   function selectCopyVariation(backgroundId: string, role: CopyRole, variation: CopyVariation) {
-    if (!layoutResult) return
+    if (!activeTextLayer) return
 
     commitCurrentEditorEdits()
 
+    const sourceBaseLayout = selectedVariationKey ? activeTextLayer.baseLayout : layoutResult ?? activeTextLayer.baseLayout
     const nextLayout = cloneLayout(variation.layout ?? applyVariationPatches(
-      layoutResult,
+      sourceBaseLayout,
       variation,
       step1Result?.width,
       step1Result?.height,
@@ -325,21 +399,27 @@ export function CreativeWorkspacePage() {
     setSelectedBlockId(nextLayout.blocks[0]?.id ?? '')
     setSelectedSpanIndex(0)
     setEditorBackgroundId(backgroundId)
-    setSelectedVariationKey({ backgroundId, role, id: variation.id })
+    updateActiveTextLayer((layer) => ({
+      ...layer,
+      selectedVariationKey: { backgroundId, role, id: variation.id },
+    }))
     setEditMode(true)
   }
 
   function selectOriginalCreative(backgroundId: string) {
-    const sourceLayout = baseCreativeLayout ?? layoutResult
-    if (!sourceLayout) return
+    if (!activeTextLayer) return
 
     commitCurrentEditorEdits()
+    const sourceLayout = selectedVariationKey ? activeTextLayer.baseLayout : layoutResult ?? activeTextLayer.baseLayout
     const nextLayout = cloneLayout(sourceLayout)
     setLayoutResult(nextLayout)
     setSelectedBlockId(nextLayout.blocks[0]?.id ?? '')
     setSelectedSpanIndex(0)
     setEditorBackgroundId(backgroundId)
-    setSelectedVariationKey(null)
+    updateActiveTextLayer((layer) => ({
+      ...layer,
+      selectedVariationKey: null,
+    }))
     setEditMode(true)
   }
 
@@ -354,63 +434,71 @@ export function CreativeWorkspacePage() {
   }
 
   function toggleDownloadSelection(key: string, selected: boolean) {
-    setSelectedDownloadKeys((current) => {
-      const next = new Set(current)
+    updateActiveTextLayer((layer) => {
+      const next = new Set(layer.selectedDownloadKeys)
       if (selected) {
         next.add(key)
       } else {
         next.delete(key)
       }
-      return next
+      return {
+        ...layer,
+        selectedDownloadKeys: next,
+      }
     })
   }
 
   function deleteCopyVariation(role: CopyRole, variationId: string) {
-    setCopyResult((current) => {
-      if (!current) return current
+    if (!activeTextLayer) return
+
+    updateActiveTextLayer((layer) => {
+      const nextDownloadKeys = new Set(layer.selectedDownloadKeys)
+      backgrounds.forEach((background) => {
+        nextDownloadKeys.delete(getVariationKey(background.id, role, variationId))
+      })
 
       return {
-        ...current,
-        variations: current.variations.map((group) =>
-          group.role === role
-            ? {
-                ...group,
-                items: group.items.filter((item) => item.id !== variationId),
-              }
-            : group,
-        ),
+        ...layer,
+        copyResult: layer.copyResult
+          ? {
+              ...layer.copyResult,
+              variations: layer.copyResult.variations.map((group) =>
+                group.role === role
+                  ? {
+                      ...group,
+                      items: group.items.filter((item) => item.id !== variationId),
+                    }
+                  : group,
+              ),
+            }
+          : null,
+        selectedDownloadKeys: nextDownloadKeys,
       }
-    })
-
-    setSelectedDownloadKeys((current) => {
-      const next = new Set(current)
-      backgrounds.forEach((background) => {
-        next.delete(getVariationKey(background.id, role, variationId))
-      })
-      return next
     })
 
     if (selectedVariationKey?.role === role && selectedVariationKey.id === variationId) {
-      setSelectedVariationKey(null)
-      const sourceLayout = baseCreativeLayout ?? layoutResult
-      if (sourceLayout) {
-        const nextLayout = cloneLayout(sourceLayout)
-        setLayoutResult(nextLayout)
-        setSelectedBlockId(nextLayout.blocks[0]?.id ?? '')
-        setSelectedSpanIndex(0)
-      }
+      const nextLayout = cloneLayout(activeTextLayer.baseLayout)
+      setLayoutResult(nextLayout)
+      setSelectedBlockId(nextLayout.blocks[0]?.id ?? '')
+      setSelectedSpanIndex(0)
+      updateActiveTextLayer((layer) => ({
+        ...layer,
+        selectedVariationKey: null,
+      }))
     }
   }
 
   function commitSelectedVariationEdits() {
-    if (!selectedVariationKey || !layoutResult) return
+    if (!selectedVariationKey || !layoutResult || !activeTextLayer) return
 
-    setCopyResult((current) => {
-      if (!current) return current
+    updateActiveTextLayer((layer) => {
+      if (!layer.copyResult) return layer
 
       return {
-        ...current,
-        variations: current.variations.map((group) => {
+        ...layer,
+        copyResult: {
+          ...layer.copyResult,
+          variations: layer.copyResult.variations.map((group) => {
           if (group.role !== selectedVariationKey.role) return group
 
           return {
@@ -421,20 +509,90 @@ export function CreativeWorkspacePage() {
                 : item,
             ),
           }
-        }),
+          }),
+        },
       }
     })
   }
 
   function commitCurrentEditorEdits() {
-    if (!layoutResult) return
+    if (!layoutResult || !activeTextLayer) return
 
     if (selectedVariationKey) {
       commitSelectedVariationEdits()
       return
     }
 
-    setBaseCreativeLayout(cloneLayout(layoutResult))
+    const nextLayout = cloneLayout(layoutResult)
+    updateActiveTextLayer((layer) => ({
+      ...layer,
+      baseLayout: nextLayout,
+    }))
+  }
+
+  async function handleCreateTextLayer({
+    name,
+    source,
+    pastedText,
+    sourceImage,
+  }: {
+    name: string
+    source: Exclude<TextLayerSource, 'original'>
+    pastedText: string
+    sourceImage: File | null
+  }) {
+    if (!layoutResult || !step1Result) return
+
+    const templateLayout = cloneLayout(layoutResult)
+    commitCurrentEditorEdits()
+    setTextLayerStatus('loading')
+    setTextLayerError('')
+
+    const formData = new FormData()
+    formData.append('mode', source)
+    formData.append('width', String(step1Result.width))
+    formData.append('height', String(step1Result.height))
+    formData.append('templateLayout', JSON.stringify(templateLayout))
+    if (source === 'manual') {
+      formData.append('pastedText', pastedText)
+    } else if (sourceImage) {
+      formData.append('sourceImage', sourceImage)
+    }
+
+    try {
+      const newLayout = await postForm<LayoutResult>('/api/create-text-layer', formData)
+      const layerId = `text-layer-${Date.now()}`
+      const layerName = name.trim() || `Text layer ${textLayers.length + 1}`
+      const selectedBackground = editorBackground.id === 'original' ? null : editorBackground
+      const defaultDownloadKeys = new Set([
+        getOriginalVariationKey(selectedBackground?.id ?? 'original'),
+      ])
+      const nextLayer: TextLayer = {
+        id: layerId,
+        name: layerName,
+        source,
+        baseLayout: cloneLayout(newLayout),
+        copyResult: null,
+        backgroundVariants: selectedBackground ? [selectedBackground] : [],
+        selectedVariationKey: null,
+        selectedDownloadKeys: defaultDownloadKeys,
+      }
+
+      setTextLayers((current) => [...current, nextLayer])
+      setActiveTextLayerId(nextLayer.id)
+      setLayoutResult(newLayout)
+      setSelectedBlockId(newLayout.blocks[0]?.id ?? '')
+      setSelectedSpanIndex(0)
+      setEditorBackgroundId(selectedBackground?.id ?? 'original')
+      setCopyStatus('idle')
+      setCopyError('')
+      setTextLayerStatus('done')
+      setTextLayerModalOpen(false)
+      setEditMode(true)
+    } catch (err) {
+      setTextLayerError(err instanceof Error ? err.message : 'Unknown error')
+      setTextLayerStatus('error')
+    }
   }
 
   function nudgeSelectedBlock(dx: number, dy: number) {
@@ -467,7 +625,7 @@ export function CreativeWorkspacePage() {
           imagePath: step1Result.imagePath,
           mode: 'original',
         },
-        ...backgroundVariants,
+        ...(activeTextLayer?.backgroundVariants ?? []),
       ]
     : []
   const editorBackground = backgrounds.find((background) => background.id === editorBackgroundId) ?? backgrounds[0]
@@ -528,12 +686,53 @@ export function CreativeWorkspacePage() {
 
       {activeTab === 'workspace' && step1Result && layoutResult && editorBackground && (
         <section className="mx-auto flex max-w-[1440px] flex-col gap-6 px-5 py-6">
+          <div className="rounded-2xl border border-[#e5ddec] bg-white p-4 shadow-[0_18px_60px_rgba(35,20,55,0.06)]">
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8b5cf6]">Text layers</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setTextLayerError('')
+                  setTextLayerStatus('idle')
+                  setTextLayerModalOpen(true)
+                }}
+                className="rounded-xl border border-[#cfc2df] bg-white px-4 py-2 text-sm font-semibold text-[#5b21b6] transition hover:bg-[#f6f0ff]"
+              >
+                Create text layer
+              </button>
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {textLayers.map((layer) => (
+                <button
+                  key={layer.id}
+                  type="button"
+                  onClick={() => selectTextLayer(layer.id)}
+                  className={[
+                    'shrink-0 rounded-xl border px-4 py-2 text-left text-sm transition',
+                    layer.id === activeTextLayerId
+                      ? 'border-[#7c3aed] bg-[#f4efff] text-[#4c1d95]'
+                      : 'border-[#e2d8ed] bg-white text-[#6b6276] hover:bg-[#fbf9fe]',
+                  ].join(' ')}
+                >
+                  <span className="block font-semibold">{layer.name}</span>
+                  <span className="block text-xs opacity-70">
+                    {layer.source === 'original'
+                      ? 'Original'
+                      : layer.source === 'manual'
+                        ? 'Manual text'
+                        : 'Imported creative'}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
             <div className="min-w-0 rounded-2xl border border-[#e5ddec] bg-white p-4 shadow-[0_24px_80px_rgba(35,20,55,0.08)]">
               <div className="mb-4 flex flex-col gap-3 border-b border-[#eee8f4] pb-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8b5cf6]">Workspace</p>
-                  <h2 className="mt-1 text-lg font-semibold">Current creative</h2>
+                  <h2 className="mt-1 text-lg font-semibold">{activeTextLayer?.name ?? 'Current creative'}</h2>
                   <p className="text-xs text-[#8a8294]">{layoutResult.blocks.length} text blocks · {editorBackground.label}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -598,9 +797,9 @@ export function CreativeWorkspacePage() {
             backgrounds={backgrounds}
             canvasWidth={step1Result.width}
             canvasHeight={step1Result.height}
-            baseLayout={baseCreativeLayout ?? layoutResult}
+            baseLayout={activeBaseLayout ?? layoutResult}
             status={copyStatus}
-            result={copyResult}
+            result={activeCopyResult}
             error={copyError}
             onSelectOriginal={selectOriginalCreative}
             onSelectVariation={selectCopyVariation}
@@ -633,6 +832,18 @@ export function CreativeWorkspacePage() {
           onChangeBackgroundPrompt={setBackgroundPrompt}
           onGenerateCopy={handleGenerateCopyVariations}
           onGenerateBackground={handleGenerateBackgroundVariant}
+        />
+      )}
+
+      {textLayerModalOpen && (
+        <CreateTextLayerModal
+          status={textLayerStatus}
+          error={textLayerError}
+          defaultName={`Text layer ${textLayers.length + 1}`}
+          onClose={() => {
+            if (textLayerStatus !== 'loading') setTextLayerModalOpen(false)
+          }}
+          onCreate={handleCreateTextLayer}
         />
       )}
     </main>

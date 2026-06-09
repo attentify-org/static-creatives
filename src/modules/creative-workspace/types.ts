@@ -12,6 +12,7 @@ export type TextTransform = 'none' | 'uppercase' | 'lowercase' | 'capitalize'
 export type CopyRole = 'hook' | 'cta' | 'body'
 export type HookVariationMode = 'light' | 'medium' | 'strong'
 export type BackgroundMode = 'original' | 'light' | 'medium' | 'strong'
+export type TextLayerSource = 'original' | 'manual' | 'creative-import'
 
 export type TextSpan = {
   id: string
@@ -78,4 +79,15 @@ export type BackgroundVariant = {
   label: string
   imagePath: string
   mode: BackgroundMode
+}
+
+export type TextLayer = {
+  id: string
+  name: string
+  source: TextLayerSource
+  baseLayout: LayoutResult
+  copyResult: CopyVariationsResult | null
+  backgroundVariants: BackgroundVariant[]
+  selectedVariationKey: SelectedVariationKey
+  selectedDownloadKeys: Set<string>
 }
