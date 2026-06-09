@@ -1,10 +1,10 @@
 export function AnalyzeCreativeLoader() {
   const steps = [
-    'Removing original text from the image',
-    'Rebuilding clean background',
-    'Detecting text blocks and roles',
-    'Laying the creative into editable layers',
-  ]
+    "Removing original text from the image",
+    "Rebuilding clean background",
+    "Detecting text blocks and roles",
+    "Laying the creative into editable layers",
+  ];
 
   return (
     <div className="mt-6 overflow-hidden rounded-2xl border border-[#e6deee] bg-[#fbf9fe] p-5">
@@ -18,12 +18,17 @@ export function AnalyzeCreativeLoader() {
 
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8b5cf6]">Analyzing</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8b5cf6]">
+              Analyzing
+            </p>
             <p className="text-xs font-medium text-[#8a8294]">~1-2 min</p>
           </div>
-          <h3 className="mt-2 text-lg font-semibold">Раскладываю креатив на слои</h3>
+          <h3 className="mt-2 text-lg font-semibold">
+            Lay out creative into layers
+          </h3>
           <p className="mt-1 text-sm leading-6 text-[#756c81]">
-            Отделяю фон от текста и собираю редактируемую структуру блоков.
+            Separating background from text and building an editable block
+            structure.
           </p>
 
           <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#e8e1f1]">
@@ -33,7 +38,7 @@ export function AnalyzeCreativeLoader() {
           <div className="mt-4 grid gap-2 text-sm text-[#685f73] sm:grid-cols-2">
             {steps.map((step) => (
               <div key={step} className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-[#8b5cf6]" />
+                <span className="h-2 w-2 min-w-2 min-h-2 rounded-full bg-[#8b5cf6]" />
                 <span>{step}</span>
               </div>
             ))}
@@ -41,5 +46,5 @@ export function AnalyzeCreativeLoader() {
         </div>
       </div>
     </div>
-  )
+  );
 }

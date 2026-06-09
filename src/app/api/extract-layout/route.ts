@@ -123,69 +123,79 @@ const responseSchema = {
 };
 
 export async function POST(request: NextRequest) {
-  const formData = await request.formData();
-  const file = formData.get("image") as File | null;
-  const width = parseDimension(formData.get("width"));
-  const height = parseDimension(formData.get("height"));
+  try {
+    const formData = await request.formData();
+    const file = formData.get("image") as File | null;
+    const width = parseDimension(formData.get("width"));
+    const height = parseDimension(formData.get("height"));
 
-  if (!file) {
-    return Response.json({ error: "No image provided" }, { status: 400 });
-  }
+    if (!file) {
+      return Response.json({ error: "No image provided" }, { status: 400 });
+    }
 
-  if (!width || !height) {
-    return Response.json({ error: "Invalid canvas size" }, { status: 400 });
-  }
+    if (!width || !height) {
+      return Response.json({ error: "Invalid canvas size" }, { status: 400 });
+    }
 
-  const bytes = await file.arrayBuffer();
-  const mimeType = file.type || "image/png";
-  const sourceImageDataUrl = toDataUrl(Buffer.from(bytes), mimeType);
+    const bytes = await file.arrayBuffer();
+    const mimeType = file.type || "image/png";
+    const sourceImageDataUrl = toDataUrl(Buffer.from(bytes), mimeType);
 
-  const response = await openai.responses.create({
-    model: layoutModel,
-    instructions:
-      "You are a senior production designer converting static ad creatives into editable absolute-positioned text layouts.",
-    input: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text: "SOURCE CREATIVE: original ad creative with all visible text.",
-          },
-          {
-            type: "input_image",
-            image_url: sourceImageDataUrl,
-            detail: "original",
-          },
-          {
-            type: "input_text",
-            text: buildPrompt(width, height),
-          },
-        ],
+    const response = await openai.responses.create({
+      model: layoutModel,
+      instructions:
+        "You are a senior production designer converting static ad creatives into editable absolute-positioned text layouts.",
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "SOURCE CREATIVE: original ad creative with all visible text.",
+            },
+            {
+              type: "input_image",
+              image_url: sourceImageDataUrl,
+              detail: "original",
+            },
+            {
+              type: "input_text",
+              text: buildPrompt(width, height),
+            },
+          ],
+        },
+      ],
+      reasoning: { effort: "medium" },
+      text: {
+        format: {
+          type: "json_schema",
+          name: "editable_creative_layout",
+          description:
+            "Editable absolute-positioned text layout for recreating the source creative.",
+          strict: true,
+          schema: responseSchema,
+        },
       },
-    ],
-    reasoning: { effort: "medium" },
-    text: {
-      format: {
-        type: "json_schema",
-        name: "editable_creative_layout",
-        description:
-          "Editable absolute-positioned text layout for recreating the source creative.",
-        strict: true,
-        schema: responseSchema,
-      },
-    },
-    max_output_tokens: 8000,
-    store: false,
-  });
+      max_output_tokens: 8000,
+      store: false,
+    });
 
-  const result = normalizeLayout(
-    JSON.parse(response.output_text ?? "{}") as LayoutResult,
-    width,
-    height,
-  );
+    const result = normalizeLayout(
+      JSON.parse(response.output_text ?? "{}") as LayoutResult,
+      width,
+      height,
+    );
 
-  return Response.json(result);
+    return Response.json(result);
+  } catch (err) {
+    console.error("extract-layout failed", err);
+    return Response.json({ error: getErrorMessage(err) }, { status: 500 });
+  }
+}
+
+function getErrorMessage(err: unknown) {
+  if (err instanceof Error) return err.message;
+  return "Failed to extract layout";
 }
 
 function buildPrompt(width: number, height: number) {
