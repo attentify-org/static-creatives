@@ -805,6 +805,20 @@ public/generated/backgrounds
 
 Для local MVP это нормально.
 
+В upload screen есть временная dev-панель `Generated files`:
+
+```txt
+GET /api/generated-assets
+```
+
+Возвращает список файлов, count и total size внутри `public/generated`.
+
+```txt
+POST /api/clear-generated-assets
+```
+
+Удаляет только содержимое `public/generated` и сбрасывает текущий workspace state, чтобы UI не ссылался на удаленные картинки.
+
 Для production нужно вынести assets в object storage:
 
 - S3;

@@ -42,6 +42,19 @@ export function CreativeWorkspacePage() {
   const [step1Status, setStep1Status] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [step1Result, setStep1Result] = useState<Step1Result | null>(null)
   const [step1Error, setStep1Error] = useState('')
+  const [clearStatus, setClearStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [clearError, setClearError] = useState('')
+  const [generatedAssetsStatus, setGeneratedAssetsStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [generatedAssetsError, setGeneratedAssetsError] = useState('')
+  const [generatedAssetsInfo, setGeneratedAssetsInfo] = useState<{
+    count: number
+    totalSize: number
+    files: Array<{
+      path: string
+      size: number
+      updatedAt: string
+    }>
+  } | null>(null)
 
   const [layoutStatus, setLayoutStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [layoutResult, setLayoutResult] = useState<LayoutResult | null>(null)
@@ -143,6 +156,61 @@ export function CreativeWorkspacePage() {
       setLayoutError(message)
       setStep1Status('error')
       setLayoutStatus('error')
+    }
+  }
+
+  async function handleClearGeneratedAssets() {
+    setClearStatus('loading')
+    setClearError('')
+
+    try {
+      const res = await fetch('/api/clear-generated-assets', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Failed to clear generated files')
+
+      setStep1Status('idle')
+      setStep1Result(null)
+      setStep1Error('')
+      setLayoutStatus('idle')
+      setLayoutResult(null)
+      setLayoutError('')
+      setEditMode(false)
+      setSelectedBlockId('')
+      setSelectedSpanIndex(0)
+      setCopyStatus('idle')
+      setCopyError('')
+      setTextLayerStatus('idle')
+      setTextLayerError('')
+      setTextLayers([])
+      setActiveTextLayerId('')
+      setVariationModalOpen(null)
+      setTextLayerModalOpen(false)
+      setBackgroundStatus('idle')
+      setBackgroundError('')
+      setEditorBackgroundId('original')
+      setGeneratedAssetsInfo({ count: 0, totalSize: 0, files: [] })
+      setActiveTab('upload')
+      setClearStatus('done')
+    } catch (err) {
+      setClearError(err instanceof Error ? err.message : 'Unknown error')
+      setClearStatus('error')
+    }
+  }
+
+  async function handleInspectGeneratedAssets() {
+    setGeneratedAssetsStatus('loading')
+    setGeneratedAssetsError('')
+
+    try {
+      const res = await fetch('/api/generated-assets')
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Failed to inspect generated files')
+
+      setGeneratedAssetsInfo(data)
+      setGeneratedAssetsStatus('done')
+    } catch (err) {
+      setGeneratedAssetsError(err instanceof Error ? err.message : 'Unknown error')
+      setGeneratedAssetsStatus('error')
     }
   }
 
@@ -676,11 +744,17 @@ export function CreativeWorkspacePage() {
         <UploadCreativePanel
           selectedFile={selectedFile}
           isBuilding={isBuilding}
+          isClearing={clearStatus === 'loading'}
+          isInspectingGeneratedAssets={generatedAssetsStatus === 'loading'}
           canOpenWorkspace={canOpenWorkspace}
-          error={step1Error || layoutError}
+          error={step1Error || layoutError || clearError || generatedAssetsError}
+          notice={clearStatus === 'done' ? 'Generated files cleared.' : ''}
+          generatedAssetsInfo={generatedAssetsInfo}
           onSelectFile={setSelectedFile}
           onBuildCreative={handleBuildCreative}
           onOpenWorkspace={() => setActiveTab('workspace')}
+          onInspectGeneratedAssets={handleInspectGeneratedAssets}
+          onClearGeneratedAssets={handleClearGeneratedAssets}
         />
       )}
 
