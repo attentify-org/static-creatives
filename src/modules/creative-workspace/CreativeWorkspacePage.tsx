@@ -499,6 +499,9 @@ export function CreativeWorkspacePage() {
     const formData = new FormData();
     formData.append("sourceImage", file);
     formData.append("cleanImagePath", editorBackground.imagePath);
+    if (editorBackground.imageAssetId) {
+      formData.append("cleanImageAssetId", editorBackground.imageAssetId);
+    }
     formData.append("width", String(step1Result.width));
     formData.append("height", String(step1Result.height));
     formData.append("mode", backgroundMode);
@@ -803,6 +806,8 @@ export function CreativeWorkspacePage() {
           id: "original",
           label: "Original background",
           imagePath: step1Result.imagePath,
+          imageAssetId: step1Result.imageAssetId,
+          imageKey: step1Result.imageKey,
           mode: "original",
         },
         ...(activeTextLayer?.backgroundVariants ?? []),
@@ -973,7 +978,7 @@ export function CreativeWorkspacePage() {
 
                 <div className="flex min-h-[620px] items-start justify-center overflow-auto rounded-xl bg-[#f3eff8] p-6">
                   <CreativeCanvas
-                    imagePath={editorBackground.imagePath}
+                    imagePath={getBackgroundImageSrc(editorBackground)}
                     width={step1Result.width}
                     height={step1Result.height}
                     globalStyles={layoutResult.globalStyles}
@@ -1062,4 +1067,9 @@ export function CreativeWorkspacePage() {
       )}
     </main>
   );
+}
+
+function getBackgroundImageSrc(background: BackgroundVariant) {
+  if (!background.imageAssetId) return background.imagePath;
+  return `/api/creative-assets/${encodeURIComponent(background.imageAssetId)}/download`;
 }

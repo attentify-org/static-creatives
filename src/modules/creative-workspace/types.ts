@@ -1,5 +1,7 @@
 export type Step1Result = {
   imagePath: string
+  imageAssetId?: string
+  imageKey?: string
   width: number
   height: number
   sourceWidth?: number
@@ -78,6 +80,8 @@ export type BackgroundVariant = {
   id: string
   label: string
   imagePath: string
+  imageAssetId?: string
+  imageKey?: string
   mode: BackgroundMode
 }
 

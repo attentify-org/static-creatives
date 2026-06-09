@@ -147,7 +147,7 @@ export function CopyVariationsPanel({
                     onSelect={() => onSelectOriginal(background.id)}
                   >
                     <CreativeCanvas
-                      imagePath={background.imagePath}
+                      imagePath={getBackgroundImageSrc(background)}
                       width={canvasWidth}
                       height={canvasHeight}
                       maxPreviewWidth={190}
@@ -185,7 +185,7 @@ export function CopyVariationsPanel({
                             onDelete={() => onDeleteVariation(group.role, item.id)}
                           >
                             <CreativeCanvas
-                              imagePath={background.imagePath}
+                              imagePath={getBackgroundImageSrc(background)}
                               width={canvasWidth}
                               height={canvasHeight}
                               maxPreviewWidth={190}
@@ -224,7 +224,7 @@ export function CopyVariationsPanel({
             }}
           >
             <CreativeCanvas
-              imagePath={item.background.imagePath}
+              imagePath={getBackgroundImageSrc(item.background)}
               width={canvasWidth}
               height={canvasHeight}
               maxPreviewWidth={canvasWidth}
@@ -237,6 +237,11 @@ export function CopyVariationsPanel({
       </div>
     </section>
   )
+}
+
+function getBackgroundImageSrc(background: BackgroundVariant) {
+  if (!background.imageAssetId) return background.imagePath;
+  return `/api/creative-assets/${encodeURIComponent(background.imageAssetId)}/download`;
 }
 
 function VariationCard({

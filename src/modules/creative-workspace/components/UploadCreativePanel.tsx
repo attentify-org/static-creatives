@@ -117,7 +117,7 @@ export function UploadCreativePanel({
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#756c81]">Generated files</p>
-              <p className="mt-1 text-xs text-[#8f8799]">Local MVP storage: public/generated</p>
+              <p className="mt-1 text-xs text-[#8f8799]">Legacy local files: public/generated</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button

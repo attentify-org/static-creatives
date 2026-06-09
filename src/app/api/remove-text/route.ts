@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
 import { toFile } from "openai";
-import { writeFile, mkdir } from "fs/promises";
-import { join } from "path";
+import { uploadCreativeAsset } from "@/lib/creative-assets";
 import { createOpenAIClient, openAIConfigurationError } from "@/lib/openai";
 
 export const maxDuration = 60;
@@ -48,15 +47,13 @@ export async function POST(request: NextRequest) {
         { status: 500 },
       );
     const imageBuffer = Buffer.from(b64 as string, "base64");
-
-    const generatedDir = join(process.cwd(), "public", "generated");
-    await mkdir(generatedDir, { recursive: true });
-
     const filename = `${Date.now()}.png`;
-    await writeFile(join(generatedDir, filename), imageBuffer);
+    const asset = await uploadCreativeAsset(imageBuffer, filename, "image/png");
 
     return Response.json({
-      imagePath: `/generated/${filename}`,
+      imagePath: asset.url,
+      imageAssetId: asset.assetId,
+      imageKey: asset.key,
       width: outputWidth,
       height: outputHeight,
       sourceWidth: width,

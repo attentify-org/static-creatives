@@ -110,7 +110,7 @@ node_modules/next/dist/docs/
 - `src/modules/creative-workspace/components/*` - UI-компоненты editor/canvas/modals/cards/export panel.
 - `src/modules/creative-workspace/utils/*` - shared helpers для layout patches, fit, image sizing, DOM export и style parsing.
 - `src/modules/creative-workspace/types.ts` - frontend data contracts.
-- `src/app/api/remove-text/route.ts` - удаление текста с картинки и сохранение чистого фона.
+- `src/app/api/remove-text/route.ts` - удаление текста с картинки и загрузка чистого фона в backend asset storage.
 - `src/app/api/extract-layout/route.ts` - извлечение текстового layout из оригинального креатива.
 - `src/app/api/create-text-layer/route.ts` - создание полного нового text layer из pasted text или другого креатива.
 - `src/app/api/generate-copy-variations/route.ts` - генерация текстовых патчей для hook/CTA/body.
@@ -453,6 +453,8 @@ type BackgroundVariant = {
   id: string
   label: string
   imagePath: string
+  imageAssetId?: string
+  imageKey?: string
   mode: "original" | "light" | "medium" | "strong"
 }
 ```
@@ -464,6 +466,8 @@ type BackgroundVariant = {
   id: "original",
   label: "Original background",
   imagePath: step1Result.imagePath,
+  imageAssetId: step1Result.imageAssetId,
+  imageKey: step1Result.imageKey,
   mode: "original"
 }
 ```
@@ -485,8 +489,8 @@ src/app/api/remove-text/route.ts
 - принимает original creative image;
 - вызывает `openai.images.edit` с `gpt-image-2`;
 - удаляет весь видимый текст;
-- сохраняет PNG в `public/generated`;
-- возвращает путь и размеры.
+- загружает PNG через backend `POST /creatives/upload`;
+- возвращает CDN URL, `assetId`, storage key и размеры.
 
 Input:
 
@@ -501,7 +505,9 @@ Output:
 
 ```json
 {
-  "imagePath": "/generated/....png",
+  "imagePath": "https://media.attainify.dev/creatives/clean-backgrounds/asset_abc123.png",
+  "imageAssetId": "asset_abc123",
+  "imageKey": "creatives/clean-backgrounds/asset_abc123.png",
   "width": 1088,
   "height": 1920,
   "sourceWidth": 1080,
@@ -710,7 +716,8 @@ Input:
 ```txt
 FormData:
 - sourceImage: original uploaded File
-- cleanImagePath: selected clean background path
+- cleanImageAssetId: selected backend asset id
+- cleanImagePath: selected clean background URL/path fallback
 - width: canvas width
 - height: canvas height
 - mode: "light" | "medium" | "strong"
@@ -724,7 +731,9 @@ Output:
 {
   "id": "background-...",
   "label": "Background medium",
-  "imagePath": "/generated/backgrounds/....png",
+  "imagePath": "https://media.attainify.dev/creatives/clean-backgrounds/asset_def456.png",
+  "imageAssetId": "asset_def456",
+  "imageKey": "creatives/clean-backgrounds/asset_def456.png",
   "mode": "medium"
 }
 ```
@@ -796,16 +805,24 @@ Layer-specific state хранится внутри `TextLayer`: `baseLayout`, `c
 
 ## 9. Generated files и storage
 
-Сейчас generated images сохраняются локально:
+Generated images идут через backend asset storage:
 
 ```txt
-public/generated
-public/generated/backgrounds
+POST https://api.attainify.dev/creatives/upload
+GET https://api.attainify.dev/creatives/{assetId}/download
 ```
 
-Для local MVP это нормально.
+`imagePath` в state хранит URL картинки для UI/export. `imageAssetId` хранит backend id, чтобы server route мог скачать selected background для следующей генерации.
 
-В upload screen есть временная dev-панель `Generated files`:
+Для browser preview/export приложение использует same-origin proxy:
+
+```txt
+GET /api/creative-assets/{assetId}/download
+```
+
+Это нужно, чтобы `html-to-image` мог встроить backend/CDN картинку в PNG без CORS-проблем. Если backend download падает, UI должен получить JSON error от proxy route вместо молчаливого белого фона.
+
+В upload screen остается временная dev-панель `Generated files` для legacy/local файлов:
 
 ```txt
 GET /api/generated-assets
@@ -819,14 +836,7 @@ POST /api/clear-generated-assets
 
 Удаляет только содержимое `public/generated` и сбрасывает текущий workspace state, чтобы UI не ссылался на удаленные картинки.
 
-Для production нужно вынести assets в object storage:
-
-- S3;
-- Cloudflare R2;
-- Supabase Storage;
-- другой persistent storage.
-
-Нельзя рассчитывать на локальную файловую систему в serverless окружениях. Также нужен cleanup старых файлов.
+Нельзя рассчитывать на локальную файловую систему в production/serverless окружениях. Cleanup старых backend assets должен жить на backend/storage стороне.
 
 ## 10. Environment variables
 
@@ -895,7 +905,7 @@ npm start
 - Нет cost controls.
 - Нет database.
 - Нет persistent projects.
-- Generated files лежат локально.
+- Project state не сохраняется между сессиями, хотя generated images уже лежат в backend asset storage.
 - Export большого количества high-res карточек может быть медленным.
 - Layout extraction иногда требует ручной правки.
 - Text fitting эвристический.
@@ -935,7 +945,7 @@ Product:
 Engineering:
 
 - добавить project persistence;
-- вынести generated assets в object storage;
+- добавить project-level хранение ссылок на backend assets;
 - добавить auth и ownership;
 - добавить rate limits и usage/cost limits;
 - добавить file size/mime validation;
@@ -945,8 +955,8 @@ Engineering:
 
 Production:
 
-- хранить исходники и generated files не в `public/generated`, а в storage;
-- добавить cleanup;
+- хранить исходники и project state в backend/database;
+- добавить cleanup backend assets;
 - добавить billing/plan limits;
 - логировать OpenAI latency/cost/errors;
 - не показывать internal error details пользователю;

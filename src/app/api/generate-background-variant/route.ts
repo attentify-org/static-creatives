@@ -1,7 +1,11 @@
 import { NextRequest } from "next/server";
 import { toFile } from "openai";
-import { mkdir, readFile, writeFile } from "fs/promises";
+import { readFile } from "fs/promises";
 import { join, normalize } from "path";
+import {
+  downloadCreativeAsset,
+  uploadCreativeAsset,
+} from "@/lib/creative-assets";
 import { createOpenAIClient, openAIConfigurationError } from "@/lib/openai";
 
 export const maxDuration = 120;
@@ -21,73 +25,91 @@ type TemplateLayout = {
 };
 
 export async function POST(request: NextRequest) {
-  const formData = await request.formData();
-  const sourceFile = formData.get("sourceImage") as File | null;
-  const cleanImagePath = formData.get("cleanImagePath") as string | null;
-  const width = parseDimension(formData.get("width"));
-  const height = parseDimension(formData.get("height"));
-  const mode = normalizeMode(formData.get("mode"));
-  const userPrompt = normalizeUserPrompt(formData.get("userPrompt"));
-  const templateLayout = parseTemplateLayout(formData.get("templateLayout"));
+  try {
+    const formData = await request.formData();
+    const sourceFile = formData.get("sourceImage") as File | null;
+    const cleanImagePath = formData.get("cleanImagePath") as string | null;
+    const cleanImageAssetId = formData.get("cleanImageAssetId") as string | null;
+    const width = parseDimension(formData.get("width"));
+    const height = parseDimension(formData.get("height"));
+    const mode = normalizeMode(formData.get("mode"));
+    const userPrompt = normalizeUserPrompt(formData.get("userPrompt"));
+    const templateLayout = parseTemplateLayout(formData.get("templateLayout"));
 
-  if (!sourceFile) {
-    return Response.json({ error: "No source image provided" }, { status: 400 });
+    if (!sourceFile) {
+      return Response.json({ error: "No source image provided" }, { status: 400 });
+    }
+
+    if (!cleanImageAssetId && !cleanImagePath) {
+      return Response.json({ error: "No clean image asset provided" }, { status: 400 });
+    }
+
+    if (!width || !height) {
+      return Response.json({ error: "Invalid canvas size" }, { status: 400 });
+    }
+
+    const openai = createOpenAIClient();
+    if (!openai) return openAIConfigurationError();
+
+    const sourceBytes = await sourceFile.arrayBuffer();
+    const sourceMimeType = sourceFile.type || "image/png";
+    const cleanImage = cleanImageAssetId
+      ? await downloadCreativeAsset(cleanImageAssetId)
+      : {
+          buffer: await readGeneratedImage(cleanImagePath as string),
+          contentType: "image/png",
+        };
+
+    const cleanImageFile = await toFile(
+      new Blob([cleanImage.buffer], { type: cleanImage.contentType }),
+      "clean-background.png",
+      { type: cleanImage.contentType },
+    );
+    const sourceImageFile = await toFile(
+      new Blob([sourceBytes], { type: sourceMimeType }),
+      "source-creative.png",
+      { type: sourceMimeType },
+    );
+
+    const imageResponse = await openai.images.edit({
+      model: "gpt-image-2",
+      image: [cleanImageFile, sourceImageFile],
+      prompt: buildPrompt(mode, width, height, userPrompt, templateLayout),
+      size: `${width}x${height}`,
+      quality: "medium",
+      output_format: "png",
+      n: 1,
+    });
+
+    const b64 = imageResponse.data?.[0]?.b64_json;
+    if (!b64) {
+      return Response.json(
+        { error: "No image returned from API" },
+        { status: 500 },
+      );
+    }
+
+    const imageBuffer = Buffer.from(b64, "base64");
+    const filename = `${Date.now()}-${mode}.png`;
+    const asset = await uploadCreativeAsset(imageBuffer, filename, "image/png");
+
+    return Response.json({
+      id: `background-${Date.now()}`,
+      label: `Background ${mode}`,
+      imagePath: asset.url,
+      imageAssetId: asset.assetId,
+      imageKey: asset.key,
+      mode,
+    });
+  } catch (err) {
+    console.error("generate-background-variant failed", err);
+    return Response.json({ error: getErrorMessage(err) }, { status: 500 });
   }
+}
 
-  if (!cleanImagePath) {
-    return Response.json({ error: "No clean image path provided" }, { status: 400 });
-  }
-
-  if (!width || !height) {
-    return Response.json({ error: "Invalid canvas size" }, { status: 400 });
-  }
-
-  const openai = createOpenAIClient();
-  if (!openai) return openAIConfigurationError();
-
-  const sourceBytes = await sourceFile.arrayBuffer();
-  const sourceMimeType = sourceFile.type || "image/png";
-  const cleanImageBuffer = await readGeneratedImage(cleanImagePath);
-
-  const cleanImageFile = await toFile(
-    new Blob([cleanImageBuffer], { type: "image/png" }),
-    "clean-background.png",
-    { type: "image/png" },
-  );
-  const sourceImageFile = await toFile(
-    new Blob([sourceBytes], { type: sourceMimeType }),
-    "source-creative.png",
-    { type: sourceMimeType },
-  );
-
-  const imageResponse = await openai.images.edit({
-    model: "gpt-image-2",
-    image: [cleanImageFile, sourceImageFile],
-    prompt: buildPrompt(mode, width, height, userPrompt, templateLayout),
-    size: `${width}x${height}`,
-    quality: "medium",
-    output_format: "png",
-    n: 1,
-  });
-
-  const b64 = imageResponse.data?.[0]?.b64_json;
-  if (!b64) {
-    return Response.json({ error: "No image returned from API" }, { status: 500 });
-  }
-
-  const imageBuffer = Buffer.from(b64, "base64");
-  const generatedDir = join(process.cwd(), "public", "generated", "backgrounds");
-  await mkdir(generatedDir, { recursive: true });
-
-  const filename = `${Date.now()}-${mode}.png`;
-  await writeFile(join(generatedDir, filename), imageBuffer);
-
-  return Response.json({
-    id: `background-${Date.now()}`,
-    label: `Background ${mode}`,
-    imagePath: `/generated/backgrounds/${filename}`,
-    mode,
-  });
+function getErrorMessage(err: unknown) {
+  if (err instanceof Error) return err.message;
+  return "Failed to generate background variant";
 }
 
 function buildPrompt(
