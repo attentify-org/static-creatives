@@ -1,9 +1,8 @@
 import { NextRequest } from "next/server";
-import OpenAI from "openai";
+import { createOpenAIClient, openAIConfigurationError } from "@/lib/openai";
 
 export const maxDuration = 120;
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const layoutModel = process.env.OPENAI_LAYOUT_MODEL ?? "gpt-5.4";
 
 type TextLayerMode = "manual" | "creative-import";
@@ -125,98 +124,111 @@ const responseSchema = {
 };
 
 export async function POST(request: NextRequest) {
-  const formData = await request.formData();
-  const mode = normalizeMode(formData.get("mode"));
-  const width = parseDimension(formData.get("width"));
-  const height = parseDimension(formData.get("height"));
-  const pastedText = normalizePastedText(formData.get("pastedText"));
-  const templateLayout = parseTemplateLayout(formData.get("templateLayout"));
-  const sourceFile = formData.get("sourceImage") as File | null;
+  try {
+    const formData = await request.formData();
+    const mode = normalizeMode(formData.get("mode"));
+    const width = parseDimension(formData.get("width"));
+    const height = parseDimension(formData.get("height"));
+    const pastedText = normalizePastedText(formData.get("pastedText"));
+    const templateLayout = parseTemplateLayout(formData.get("templateLayout"));
+    const sourceFile = formData.get("sourceImage") as File | null;
 
-  if (!width || !height) {
-    return Response.json({ error: "Invalid canvas size" }, { status: 400 });
-  }
+    if (!width || !height) {
+      return Response.json({ error: "Invalid canvas size" }, { status: 400 });
+    }
 
-  if (!templateLayout?.blocks.length) {
-    return Response.json({ error: "No template layout provided" }, { status: 400 });
-  }
+    if (!templateLayout?.blocks.length) {
+      return Response.json({ error: "No template layout provided" }, { status: 400 });
+    }
 
-  if (mode === "manual" && !pastedText) {
-    return Response.json({ error: "No text provided" }, { status: 400 });
-  }
+    if (mode === "manual" && !pastedText) {
+      return Response.json({ error: "No text provided" }, { status: 400 });
+    }
 
-  if (mode === "creative-import" && !sourceFile) {
-    return Response.json({ error: "No source creative provided" }, { status: 400 });
-  }
+    if (mode === "creative-import" && !sourceFile) {
+      return Response.json({ error: "No source creative provided" }, { status: 400 });
+    }
 
-  const content: Array<
-    | { type: "input_text"; text: string }
-    | { type: "input_image"; image_url: string; detail: "original" }
-  > = [
-    {
-      type: "input_text",
-      text: buildPromptHeader(mode, width, height, templateLayout),
-    },
-  ];
-
-  if (mode === "manual") {
-    content.push({
-      type: "input_text",
-      text: `NEW TEXT CONTENT PROVIDED BY USER:\n\n${pastedText}`,
-    });
-  } else if (sourceFile) {
-    const bytes = await sourceFile.arrayBuffer();
-    const mimeType = sourceFile.type || "image/png";
-    content.push(
+    const content: Array<
+      | { type: "input_text"; text: string }
+      | { type: "input_image"; image_url: string; detail: "original" }
+    > = [
       {
         type: "input_text",
-        text: "SOURCE COPY CREATIVE: extract the visible text/content from this image, then adapt it to the template layout style.",
+        text: buildPromptHeader(mode, width, height, templateLayout),
       },
-      {
-        type: "input_image",
-        image_url: toDataUrl(Buffer.from(bytes), mimeType),
-        detail: "original",
+    ];
+
+    if (mode === "manual") {
+      content.push({
+        type: "input_text",
+        text: `NEW TEXT CONTENT PROVIDED BY USER:\n\n${pastedText}`,
+      });
+    } else if (sourceFile) {
+      const bytes = await sourceFile.arrayBuffer();
+      const mimeType = sourceFile.type || "image/png";
+      content.push(
+        {
+          type: "input_text",
+          text: "SOURCE COPY CREATIVE: extract the visible text/content from this image, then adapt it to the template layout style.",
+        },
+        {
+          type: "input_image",
+          image_url: toDataUrl(Buffer.from(bytes), mimeType),
+          detail: "original",
+        },
+      );
+    }
+
+    content.push({
+      type: "input_text",
+      text: buildPromptRules(),
+    });
+
+    const openai = createOpenAIClient();
+    if (!openai) return openAIConfigurationError();
+
+    const response = await openai.responses.create({
+      model: layoutModel,
+      instructions:
+        "You are a senior production designer adapting new ad copy into an existing editable creative layout system.",
+      input: [
+        {
+          role: "user",
+          content,
+        },
+      ],
+      reasoning: { effort: "medium" },
+      text: {
+        format: {
+          type: "json_schema",
+          name: "new_text_layer_layout",
+          description:
+            "A complete editable text layer adapted to an existing creative template layout.",
+          strict: true,
+          schema: responseSchema,
+        },
       },
+      max_output_tokens: 8000,
+      store: false,
+    });
+
+    const result = normalizeLayout(
+      JSON.parse(response.output_text ?? "{}") as LayoutResult,
+      width,
+      height,
     );
+
+    return Response.json(result);
+  } catch (err) {
+    console.error("create-text-layer failed", err);
+    return Response.json({ error: getErrorMessage(err) }, { status: 500 });
   }
+}
 
-  content.push({
-    type: "input_text",
-    text: buildPromptRules(),
-  });
-
-  const response = await openai.responses.create({
-    model: layoutModel,
-    instructions:
-      "You are a senior production designer adapting new ad copy into an existing editable creative layout system.",
-    input: [
-      {
-        role: "user",
-        content,
-      },
-    ],
-    reasoning: { effort: "medium" },
-    text: {
-      format: {
-        type: "json_schema",
-        name: "new_text_layer_layout",
-        description:
-          "A complete editable text layer adapted to an existing creative template layout.",
-        strict: true,
-        schema: responseSchema,
-      },
-    },
-    max_output_tokens: 8000,
-    store: false,
-  });
-
-  const result = normalizeLayout(
-    JSON.parse(response.output_text ?? "{}") as LayoutResult,
-    width,
-    height,
-  );
-
-  return Response.json(result);
+function getErrorMessage(err: unknown) {
+  if (err instanceof Error) return err.message;
+  return "Failed to create text layer";
 }
 
 function buildPromptHeader(
