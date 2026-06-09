@@ -443,6 +443,19 @@ export function CreativeWorkspacePage() {
     updateSelectedBlock({ x: block.x + dx, y: block.y + dy })
   }
 
+  function moveBlock(blockId: string, x: number, y: number) {
+    setLayoutResult((current) => {
+      if (!current) return current
+
+      return {
+        ...current,
+        blocks: current.blocks.map((block) =>
+          block.id === blockId ? { ...block, x, y } : block,
+        ),
+      }
+    })
+  }
+
   const selectedBlock = layoutResult?.blocks.find((block) => block.id === selectedBlockId) ?? null
   const selectedSpans = selectedBlock ? getInlineSpans(selectedBlock) : []
   const selectedSpan = selectedSpans[selectedSpanIndex] ?? selectedSpans[0] ?? null
@@ -558,6 +571,7 @@ export function CreativeWorkspacePage() {
                   editMode={editMode}
                   selectedBlockId={selectedBlockId}
                   onSelectBlock={selectBlock}
+                  onMoveBlock={moveBlock}
                 />
               </div>
             </div>
