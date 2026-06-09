@@ -1,11 +1,10 @@
 import { NextRequest } from "next/server";
-import OpenAI from "openai";
 import { mkdir, writeFile } from "fs/promises";
 import { join } from "path";
+import { createOpenAIClient, openAIConfigurationError } from "@/lib/openai";
 
 export const maxDuration = 120;
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const layoutModel = process.env.OPENAI_LAYOUT_MODEL ?? "gpt-5.4";
 
 const responseSchema = {
@@ -32,6 +31,9 @@ export async function POST(request: NextRequest) {
   if (!baseHtml) {
     return Response.json({ error: "No base HTML provided" }, { status: 400 });
   }
+
+  const openai = createOpenAIClient();
+  if (!openai) return openAIConfigurationError();
 
   const bytes = await file.arrayBuffer();
   const mimeType = file.type || "image/png";

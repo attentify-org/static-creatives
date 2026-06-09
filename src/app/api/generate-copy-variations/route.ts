@@ -1,8 +1,7 @@
-import OpenAI from "openai";
+import { createOpenAIClient, openAIConfigurationError } from "@/lib/openai";
 
 export const maxDuration = 60;
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const copyModel = process.env.OPENAI_COPY_MODEL ?? process.env.OPENAI_LAYOUT_MODEL ?? "gpt-5.4";
 
 type CopyRole = "hook" | "cta" | "body";
@@ -101,6 +100,9 @@ export async function POST(request: Request) {
   if (!sourceBlocks.length) {
     return Response.json({ error: "No hook, CTA, or body blocks found" }, { status: 400 });
   }
+
+  const openai = createOpenAIClient();
+  if (!openai) return openAIConfigurationError();
 
   const response = await openai.responses.create({
     model: copyModel,

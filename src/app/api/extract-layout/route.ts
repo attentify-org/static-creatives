@@ -1,9 +1,8 @@
 import { NextRequest } from "next/server";
-import OpenAI from "openai";
+import { createOpenAIClient, openAIConfigurationError } from "@/lib/openai";
 
 export const maxDuration = 120;
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const layoutModel = process.env.OPENAI_LAYOUT_MODEL ?? "gpt-5.4";
 
 type TextSpan = {
@@ -140,6 +139,9 @@ export async function POST(request: NextRequest) {
     const bytes = await file.arrayBuffer();
     const mimeType = file.type || "image/png";
     const sourceImageDataUrl = toDataUrl(Buffer.from(bytes), mimeType);
+
+    const openai = createOpenAIClient();
+    if (!openai) return openAIConfigurationError();
 
     const response = await openai.responses.create({
       model: layoutModel,
