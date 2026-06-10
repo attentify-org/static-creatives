@@ -44,8 +44,9 @@ export function CopyVariationsPanel({
   selectedBackgroundId,
   selectedVariationKey,
   selectedDownloadKeys,
+  hiddenVariationKeys,
   onToggleDownloadSelection,
-  onDeleteVariation,
+  onHideVariation,
 }: {
   backgrounds: BackgroundVariant[];
   canvasWidth: number;
@@ -63,8 +64,13 @@ export function CopyVariationsPanel({
   selectedBackgroundId: string;
   selectedVariationKey: SelectedVariationKey;
   selectedDownloadKeys: Set<string>;
+  hiddenVariationKeys: Set<string>;
   onToggleDownloadSelection: (key: string, selected: boolean) => void;
-  onDeleteVariation: (role: CopyRole, variationId: string) => void;
+  onHideVariation: (
+    backgroundId: string,
+    role: CopyRole,
+    variationId: string,
+  ) => void;
 }) {
   const [downloadStatus, setDownloadStatus] = useState<
     "idle" | "loading" | "error"
@@ -86,6 +92,7 @@ export function CopyVariationsPanel({
         baseLayout,
         canvasWidth,
         canvasHeight,
+        hiddenVariationKeys,
       ).filter((item) => selectedDownloadKeys.has(item.key));
 
       if (selectedItems.length === 1) {
@@ -214,6 +221,14 @@ export function CopyVariationsPanel({
                     )}
                     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                       {group.items.map((item) => {
+                        const variationKey = getVariationKey(
+                          background.id,
+                          group.role,
+                          item.id,
+                        );
+
+                        if (hiddenVariationKeys.has(variationKey)) return null;
+
                         const variationLayout =
                           item.layout ??
                           applyVariationPatches(
@@ -227,11 +242,6 @@ export function CopyVariationsPanel({
                             background.id &&
                           selectedVariationKey.role === group.role &&
                           selectedVariationKey.id === item.id;
-                        const variationKey = getVariationKey(
-                          background.id,
-                          group.role,
-                          item.id,
-                        );
 
                         return (
                           <VariationCard
@@ -249,8 +259,12 @@ export function CopyVariationsPanel({
                             onSelect={() =>
                               onSelectVariation(background.id, group.role, item)
                             }
-                            onDelete={() =>
-                              onDeleteVariation(group.role, item.id)
+                            onHide={() =>
+                              onHideVariation(
+                                background.id,
+                                group.role,
+                                item.id,
+                              )
                             }
                           >
                             <CreativeCanvas
@@ -291,6 +305,7 @@ export function CopyVariationsPanel({
           baseLayout,
           canvasWidth,
           canvasHeight,
+          hiddenVariationKeys,
         ).map((item) => (
           <div
             key={item.key}
@@ -328,7 +343,7 @@ function VariationCard({
   children,
   onToggleExport,
   onSelect,
-  onDelete,
+  onHide,
 }: {
   title: string;
   subtitle: string;
@@ -338,7 +353,7 @@ function VariationCard({
   children: ReactNode;
   onToggleExport: (checked: boolean) => void;
   onSelect: () => void;
-  onDelete?: () => void;
+  onHide?: () => void;
 }) {
   return (
     <div
@@ -377,13 +392,13 @@ function VariationCard({
       >
         {selected ? "Selected" : "Select"}
       </button>
-      {onDelete && (
+      {onHide && (
         <button
           type="button"
           className="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-600 transition hover:bg-red-50"
-          onClick={onDelete}
+          onClick={onHide}
         >
-          Delete variation
+          Remove from this background
         </button>
       )}
       <span className="sr-only">{exportKey}</span>

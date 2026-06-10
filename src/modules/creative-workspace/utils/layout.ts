@@ -113,6 +113,7 @@ export function getExportItems(
   baseLayout: LayoutResult,
   canvasWidth: number,
   canvasHeight: number,
+  hiddenVariationKeys = new Set<string>(),
 ) {
   return backgrounds.flatMap((background) => {
     const originalItem = {
@@ -123,11 +124,13 @@ export function getExportItems(
 
     const variationItems = result
       ? result.variations.flatMap((group) =>
-          group.items.map((item) => ({
-            key: getVariationKey(background.id, group.role, item.id),
-            background,
-            layout: item.layout ?? applyVariationPatches(baseLayout, item, canvasWidth, canvasHeight),
-          })),
+          group.items
+            .map((item) => ({
+              key: getVariationKey(background.id, group.role, item.id),
+              background,
+              layout: item.layout ?? applyVariationPatches(baseLayout, item, canvasWidth, canvasHeight),
+            }))
+            .filter((item) => !hiddenVariationKeys.has(item.key)),
         )
       : []
 

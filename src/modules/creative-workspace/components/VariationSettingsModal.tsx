@@ -20,6 +20,8 @@ export function VariationSettingsModal({
   onChangeBackgroundPrompt,
   onGenerateCopy,
   onGenerateBackground,
+  onCancelCopyGeneration,
+  onCancelBackgroundGeneration,
 }: {
   mode: 'text' | 'visual'
   counts: Record<CopyRole, number>
@@ -39,6 +41,8 @@ export function VariationSettingsModal({
   onChangeBackgroundPrompt: (prompt: string) => void
   onGenerateCopy: () => void
   onGenerateBackground: () => void
+  onCancelCopyGeneration: () => void
+  onCancelBackgroundGeneration: () => void
 }) {
   const totalCount = counts.hook + counts.cta + counts.body
 
@@ -106,14 +110,25 @@ export function VariationSettingsModal({
                 />
               </label>
 
-              <button
-                type="button"
-                disabled={copyStatus === 'loading' || totalCount === 0}
-                onClick={onGenerateCopy}
-                className="mt-4 w-full rounded-xl bg-[#7c3aed] px-5 py-3 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(124,58,237,0.24)] transition hover:bg-[#6d28d9] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {copyStatus === 'loading' ? 'Generating copy...' : 'Generate copy variations'}
-              </button>
+              <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto]">
+                <button
+                  type="button"
+                  disabled={copyStatus === 'loading' || totalCount === 0}
+                  onClick={onGenerateCopy}
+                  className="rounded-xl bg-[#7c3aed] px-5 py-3 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(124,58,237,0.24)] transition hover:bg-[#6d28d9] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {copyStatus === 'loading' ? 'Generating copy...' : 'Generate copy variations'}
+                </button>
+                {copyStatus === 'loading' && (
+                  <button
+                    type="button"
+                    onClick={onCancelCopyGeneration}
+                    className="rounded-xl border border-red-200 bg-white px-5 py-3 text-sm font-semibold text-red-600 transition hover:bg-red-50"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
               {copyStatus === 'error' && <p className="mt-3 text-sm text-red-600">{copyError}</p>}
             </div>
           )}
@@ -145,14 +160,25 @@ export function VariationSettingsModal({
                   className="resize-y rounded-lg border border-[#ddd4e8] p-3 text-sm font-medium normal-case leading-6 tracking-normal text-[#17121f] outline-none transition placeholder:text-[#aaa2b4] focus:border-[#8b5cf6]"
                 />
               </label>
-              <button
-                type="button"
-                disabled={backgroundStatus === 'loading'}
-                onClick={onGenerateBackground}
-                className="mt-4 w-full rounded-xl border border-[#cfc2df] px-5 py-3 text-sm font-semibold text-[#5b21b6] transition hover:bg-[#f6f0ff] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {backgroundStatus === 'loading' ? 'Generating...' : 'Generate background'}
-              </button>
+              <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto]">
+                <button
+                  type="button"
+                  disabled={backgroundStatus === 'loading'}
+                  onClick={onGenerateBackground}
+                  className="rounded-xl border border-[#cfc2df] px-5 py-3 text-sm font-semibold text-[#5b21b6] transition hover:bg-[#f6f0ff] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {backgroundStatus === 'loading' ? 'Generating...' : 'Generate background'}
+                </button>
+                {backgroundStatus === 'loading' && (
+                  <button
+                    type="button"
+                    onClick={onCancelBackgroundGeneration}
+                    className="rounded-xl border border-red-200 bg-white px-5 py-3 text-sm font-semibold text-red-600 transition hover:bg-red-50"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
               {backgroundStatus === 'error' && <p className="mt-3 text-sm text-red-600">{backgroundError}</p>}
             </div>
           )}

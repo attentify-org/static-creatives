@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { CopyVariationsPanel } from "./components/CopyVariationsPanel";
 import { CreativeCanvas } from "./components/CreativeCanvas";
 import { EditorPanel } from "./components/EditorPanel";
@@ -36,6 +36,10 @@ import { WATERMARK_TEXT } from "./utils/watermark";
 import LogoIconSvg from "@/icons_jsx/LogoSvg";
 
 export function CreativeWorkspacePage() {
+  const copyGenerationControllerRef = useRef<AbortController | null>(null);
+  const backgroundGenerationControllerRef = useRef<AbortController | null>(
+    null,
+  );
   const [activeTab, setActiveTab] = useState<"upload" | "workspace">("upload");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [variationModalOpen, setVariationModalOpen] = useState<
@@ -107,11 +111,15 @@ export function CreativeWorkspacePage() {
   const selectedVariationKey = activeTextLayer?.selectedVariationKey ?? null;
   const selectedDownloadKeys =
     activeTextLayer?.selectedDownloadKeys ?? new Set<string>();
+  const hiddenVariationKeys =
+    activeTextLayer?.hiddenVariationKeys ?? new Set<string>();
 
   async function handleBuildCreative() {
     const file = selectedFile;
     if (!file) return;
 
+    cancelCopyGeneration();
+    cancelBackgroundGeneration();
     setActiveTab("upload");
     setStep1Status("loading");
     setStep1Error("");
@@ -163,6 +171,7 @@ export function CreativeWorkspacePage() {
         backgroundVariants: [],
         selectedVariationKey: null,
         selectedDownloadKeys: new Set([getOriginalVariationKey("original")]),
+        hiddenVariationKeys: new Set(),
       };
 
       setStep1Result(removeTextResult);
@@ -185,6 +194,8 @@ export function CreativeWorkspacePage() {
   }
 
   async function handleClearGeneratedAssets() {
+    cancelCopyGeneration();
+    cancelBackgroundGeneration();
     setClearStatus("loading");
     setClearError("");
 
@@ -421,7 +432,10 @@ export function CreativeWorkspacePage() {
     if (!layoutResult || !activeTextLayer) return;
     const layoutForVariations = cloneLayout(layoutResult);
     const sourceVariationKey = selectedVariationKey;
+    const controller = new AbortController();
 
+    copyGenerationControllerRef.current?.abort();
+    copyGenerationControllerRef.current = controller;
     commitCurrentEditorEdits();
     setCopyStatus("loading");
     setCopyError("");
@@ -442,7 +456,10 @@ export function CreativeWorkspacePage() {
           hookMode: hookVariationMode,
           userPrompt: copyPrompt,
         }),
+        signal: controller.signal,
       });
+      if (copyGenerationControllerRef.current !== controller) return;
+
       const materializedResult = materializeCopyVariations(
         data,
         layoutForVariations,
@@ -480,8 +497,17 @@ export function CreativeWorkspacePage() {
       setCopyStatus("done");
       setVariationModalOpen(null);
     } catch (err) {
+      if (isAbortError(err)) {
+        setCopyError("");
+        setCopyStatus("idle");
+        return;
+      }
       setCopyError(err instanceof Error ? err.message : "Unknown error");
       setCopyStatus("error");
+    } finally {
+      if (copyGenerationControllerRef.current === controller) {
+        copyGenerationControllerRef.current = null;
+      }
     }
   }
 
@@ -496,6 +522,10 @@ export function CreativeWorkspacePage() {
     )
       return;
 
+    const controller = new AbortController();
+
+    backgroundGenerationControllerRef.current?.abort();
+    backgroundGenerationControllerRef.current = controller;
     setBackgroundStatus("loading");
     setBackgroundError("");
 
@@ -515,7 +545,10 @@ export function CreativeWorkspacePage() {
       const data = await postForm<BackgroundVariant>(
         "/api/generate-background-variant",
         formData,
+        { signal: controller.signal },
       );
+      if (backgroundGenerationControllerRef.current !== controller) return;
+
       const numberedBackground = {
         ...data,
         label: `Background variant ${activeTextLayer.backgroundVariants.length + 1} (${backgroundMode})`,
@@ -538,9 +571,32 @@ export function CreativeWorkspacePage() {
       setBackgroundStatus("done");
       setVariationModalOpen(null);
     } catch (err) {
+      if (isAbortError(err)) {
+        setBackgroundError("");
+        setBackgroundStatus("idle");
+        return;
+      }
       setBackgroundError(err instanceof Error ? err.message : "Unknown error");
       setBackgroundStatus("error");
+    } finally {
+      if (backgroundGenerationControllerRef.current === controller) {
+        backgroundGenerationControllerRef.current = null;
+      }
     }
+  }
+
+  function cancelCopyGeneration() {
+    copyGenerationControllerRef.current?.abort();
+    copyGenerationControllerRef.current = null;
+    setCopyError("");
+    setCopyStatus("idle");
+  }
+
+  function cancelBackgroundGeneration() {
+    backgroundGenerationControllerRef.current?.abort();
+    backgroundGenerationControllerRef.current = null;
+    setBackgroundError("");
+    setBackgroundStatus("idle");
   }
 
   function selectCopyVariation(
@@ -619,39 +675,30 @@ export function CreativeWorkspacePage() {
     });
   }
 
-  function deleteCopyVariation(role: CopyRole, variationId: string) {
+  function hideCopyVariation(
+    backgroundId: string,
+    role: CopyRole,
+    variationId: string,
+  ) {
     if (!activeTextLayer) return;
+    const hiddenKey = getVariationKey(backgroundId, role, variationId);
 
     updateActiveTextLayer((layer) => {
       const nextDownloadKeys = new Set(layer.selectedDownloadKeys);
-      backgrounds.forEach((background) => {
-        nextDownloadKeys.delete(
-          getVariationKey(background.id, role, variationId),
-        );
-      });
+      nextDownloadKeys.delete(hiddenKey);
 
       return {
         ...layer,
-        copyResult: layer.copyResult
-          ? {
-              ...layer.copyResult,
-              variations: layer.copyResult.variations.map((group) =>
-                group.role === role
-                  ? {
-                      ...group,
-                      items: group.items.filter(
-                        (item) => item.id !== variationId,
-                      ),
-                    }
-                  : group,
-              ),
-            }
-          : null,
+        hiddenVariationKeys: new Set([
+          ...(layer.hiddenVariationKeys ?? new Set<string>()),
+          hiddenKey,
+        ]),
         selectedDownloadKeys: nextDownloadKeys,
       };
     });
 
     if (
+      selectedVariationKey?.backgroundId === backgroundId &&
       selectedVariationKey?.role === role &&
       selectedVariationKey.id === variationId
     ) {
@@ -758,6 +805,7 @@ export function CreativeWorkspacePage() {
         backgroundVariants: selectedBackground ? [selectedBackground] : [],
         selectedVariationKey: null,
         selectedDownloadKeys: defaultDownloadKeys,
+        hiddenVariationKeys: new Set(),
       };
 
       setTextLayers((current) => [...current, nextLayer]);
@@ -1028,8 +1076,9 @@ export function CreativeWorkspacePage() {
               selectedBackgroundId={editorBackground.id}
               selectedVariationKey={selectedVariationKey}
               selectedDownloadKeys={selectedDownloadKeys}
+              hiddenVariationKeys={hiddenVariationKeys}
               onToggleDownloadSelection={toggleDownloadSelection}
-              onDeleteVariation={deleteCopyVariation}
+              onHideVariation={hideCopyVariation}
             />
           </section>
         )}
@@ -1054,6 +1103,8 @@ export function CreativeWorkspacePage() {
           onChangeBackgroundPrompt={setBackgroundPrompt}
           onGenerateCopy={handleGenerateCopyVariations}
           onGenerateBackground={handleGenerateBackgroundVariant}
+          onCancelCopyGeneration={cancelCopyGeneration}
+          onCancelBackgroundGeneration={cancelBackgroundGeneration}
         />
       )}
 
@@ -1075,4 +1126,11 @@ export function CreativeWorkspacePage() {
 function getBackgroundImageSrc(background: BackgroundVariant) {
   if (!background.imageAssetId) return background.imagePath;
   return `/api/creative-assets/${encodeURIComponent(background.imageAssetId)}/download`;
+}
+
+function isAbortError(err: unknown) {
+  return (
+    err instanceof DOMException ||
+    err instanceof Error
+  ) && err.name === "AbortError";
 }

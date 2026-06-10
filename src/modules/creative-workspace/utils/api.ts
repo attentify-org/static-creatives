@@ -1,5 +1,9 @@
-export async function postForm<T>(url: string, formData: FormData): Promise<T> {
-  const res = await fetch(url, { method: 'POST', body: formData })
+export async function postForm<T>(
+  url: string,
+  formData: FormData,
+  init?: Omit<RequestInit, 'method' | 'body'>,
+): Promise<T> {
+  const res = await fetch(url, { ...init, method: 'POST', body: formData })
   return parseJsonResponse<T>(res)
 }
 

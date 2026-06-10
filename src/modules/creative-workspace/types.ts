@@ -94,4 +94,5 @@ export type TextLayer = {
   backgroundVariants: BackgroundVariant[]
   selectedVariationKey: SelectedVariationKey
   selectedDownloadKeys: Set<string>
+  hiddenVariationKeys: Set<string>
 }
