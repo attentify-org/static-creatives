@@ -189,9 +189,12 @@ export function CreativeWorkspacePage() {
     setClearError("");
 
     try {
-      await requestJson<{ ok: boolean; deleted: number }>("/api/clear-generated-assets", {
-        method: "POST",
-      });
+      await requestJson<{ ok: boolean; deleted: number }>(
+        "/api/clear-generated-assets",
+        {
+          method: "POST",
+        },
+      );
 
       setStep1Status("idle");
       setStep1Result(null);
